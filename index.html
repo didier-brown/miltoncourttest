@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Creative Playground</title>
+    <style>
+      :root {
+        --animation-speed: 12s;
+      }
+
+      * {
+        box-sizing: border-box;
+        font-family: "Poppins", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: linear-gradient(135deg, #fdfbfb 0%, #ebedee 100%);
+        transition: background 0.6s ease, color 0.6s ease;
+        color: #1f2933;
+      }
+
+      h1 {
+        margin: 0;
+        text-align: center;
+        padding: 2rem 1rem 1rem;
+        font-size: clamp(2rem, 4vw, 3rem);
+        letter-spacing: 0.04em;
+      }
+
+      #controls {
+        display: grid;
+        gap: 1rem;
+        padding: 0 1.5rem 2rem;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+
+      .panel {
+        background: rgba(255, 255, 255, 0.75);
+        border-radius: 16px;
+        padding: 1.25rem;
+        box-shadow: 0 12px 30px rgba(31, 41, 51, 0.12);
+        backdrop-filter: blur(8px);
+      }
+
+      button,
+      input[type="range"],
+      select {
+        width: 100%;
+        padding: 0.75rem 1rem;
+        border-radius: 12px;
+        border: none;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #1f2933;
+        background: #f0f4f8;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+        cursor: pointer;
+      }
+
+      button:hover,
+      button:focus-visible,
+      select:hover,
+      select:focus-visible {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 18px rgba(31, 41, 51, 0.18);
+        background: #d9e2ec;
+        outline: none;
+      }
+
+      input[type="range"] {
+        appearance: none;
+        height: 8px;
+        background: linear-gradient(90deg, #6366f1, #ec4899);
+        border-radius: 999px;
+        cursor: pointer;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        appearance: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #1f2933;
+        border: 3px solid #fff;
+        box-shadow: 0 6px 16px rgba(31, 41, 51, 0.25);
+      }
+
+      #canvas {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+        padding: 2rem;
+        display: grid;
+        place-items: center;
+      }
+
+      #canvas::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at top left, rgba(99, 102, 241, 0.18), transparent 55%),
+          radial-gradient(circle at bottom right, rgba(236, 72, 153, 0.18), transparent 55%);
+        pointer-events: none;
+      }
+
+      #promptBox {
+        max-width: 720px;
+        padding: 1.5rem;
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow: 0 16px 40px rgba(31, 41, 51, 0.14);
+        backdrop-filter: blur(10px);
+        text-align: center;
+        position: relative;
+        z-index: 1;
+      }
+
+      #promptText {
+        font-size: clamp(1rem, 2.5vw, 1.4rem);
+        line-height: 1.7;
+        letter-spacing: 0.02em;
+        margin-bottom: 1.5rem;
+      }
+
+      .shape {
+        position: absolute;
+        border-radius: 24px;
+        opacity: 0.85;
+        animation: float 12s linear infinite;
+      }
+
+      .shape.circle {
+        border-radius: 50%;
+      }
+
+      .shape.twist {
+        border-radius: 999px 0 999px 0;
+      }
+
+      @keyframes float {
+        from {
+          transform: translateY(0) rotate(0deg);
+        }
+        to {
+          transform: translateY(-50px) rotate(360deg);
+        }
+      }
+
+      @media (max-width: 600px) {
+        #controls {
+          padding-bottom: 1rem;
+        }
+
+        #canvas {
+          padding: 1.5rem 1rem 2.5rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Creative Playground</h1>
+    <section id="controls">
+      <div class="panel">
+        <h2>Palette Mood</h2>
+        <button id="colorButton">Change colour palette</button>
+        <p id="paletteLabel" aria-live="polite"></p>
+      </div>
+      <div class="panel">
+        <h2>Generative Shapes</h2>
+        <button id="shapeButton">Add an imaginative shape</button>
+        <button id="clearShapesButton" style="margin-top: 0.75rem">Clear shapes</button>
+      </div>
+      <div class="panel">
+        <h2>Motion</h2>
+        <label for="speedControl">Animation speed</label>
+        <input id="speedControl" type="range" min="4" max="20" value="12" />
+      </div>
+      <div class="panel">
+        <h2>Prompt Muse</h2>
+        <button id="promptButton">New spark</button>
+        <p id="promptOutput" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <main id="canvas">
+      <div id="promptBox">
+        <p id="promptText">
+          Tap the buttons to remix the colours, scatter abstract shapes, and discover prompts to kickstart your next idea.
+        </p>
+      </div>
+    </main>
+
+    <script>
+      const paletteButton = document.getElementById("colorButton");
+      const shapeButton = document.getElementById("shapeButton");
+      const clearShapesButton = document.getElementById("clearShapesButton");
+      const speedControl = document.getElementById("speedControl");
+      const promptButton = document.getElementById("promptButton");
+      const promptText = document.getElementById("promptText");
+      const promptOutput = document.getElementById("promptOutput");
+      const paletteLabel = document.getElementById("paletteLabel");
+      const canvas = document.getElementById("canvas");
+
+      const palettes = [
+        { name: "Aurora", colors: ["#141e30", "#243b55"], text: "#f8fafc" },
+        { name: "Sorbet", colors: ["#ff9a9e", "#fad0c4"], text: "#33272a" },
+        { name: "Lagoon", colors: ["#43cea2", "#185a9d"], text: "#f5f7fa" },
+        { name: "Neon Dreams", colors: ["#ec4899", "#6366f1"], text: "#f8fafc" },
+        { name: "Sunset", colors: ["#f2994a", "#f2c94c"], text: "#1f2933" },
+        { name: "Monochrome", colors: ["#1f2933", "#3d4856"], text: "#f0f4f8" }
+      ];
+
+      const prompts = [
+        "Imagine a city floating on luminous clouds—what details make it believable?",
+        "Sketch a musical instrument inspired by ocean currents and coral reefs.",
+        "Design a poster for an interstellar garden show.",
+        "Invent a creature that thrives in bioluminescent forests.",
+        "Create an album cover for a band of time-travelling poets.",
+        "Compose a palette inspired by your favourite childhood memory."
+      ];
+
+      function changePalette() {
+        const selection = palettes[Math.floor(Math.random() * palettes.length)];
+        document.body.style.background = `linear-gradient(135deg, ${selection.colors[0]}, ${selection.colors[1]})`;
+        document.body.style.color = selection.text;
+        paletteLabel.textContent = `${selection.name} palette engaged.`;
+        paletteLabel.style.opacity = 1;
+      }
+
+      function getRandomBetween(min, max) {
+        return Math.random() * (max - min) + min;
+      }
+
+      function addShape() {
+        const shape = document.createElement("div");
+        const styles = ["circle", "twist", "square"];
+        const chosenStyle = styles[Math.floor(Math.random() * styles.length)];
+        shape.classList.add("shape");
+        if (chosenStyle !== "square") {
+          shape.classList.add(chosenStyle);
+        }
+
+        const size = getRandomBetween(80, 220);
+        shape.style.width = `${size}px`;
+        shape.style.height = `${size}px`;
+        shape.style.left = `${getRandomBetween(-10, 80)}%`;
+        shape.style.top = `${getRandomBetween(-10, 80)}%`;
+        shape.style.background = `linear-gradient(${getRandomBetween(0, 360)}deg, rgba(${Math.floor(getRandomBetween(0, 255))}, ${Math.floor(getRandomBetween(0, 255))}, ${Math.floor(getRandomBetween(0, 255))}, 0.85), rgba(${Math.floor(getRandomBetween(0, 255))}, ${Math.floor(getRandomBetween(0, 255))}, ${Math.floor(getRandomBetween(0, 255))}, 0.65))`;
+        const speedFactor = getRandomBetween(0.6, 1.4);
+        shape.dataset.speedFactor = speedFactor.toFixed(2);
+        shape.style.animationDuration = `${(Number(speedControl.value) * speedFactor).toFixed(2)}s`;
+        shape.setAttribute("aria-hidden", "true");
+
+        canvas.appendChild(shape);
+        shape.addEventListener("animationiteration", () => {
+          shape.style.animationDirection = shape.style.animationDirection === "reverse" ? "normal" : "reverse";
+        });
+      }
+
+      function clearShapes() {
+        document.querySelectorAll(".shape").forEach((shape) => shape.remove());
+      }
+
+      function updateSpeed(event) {
+        const speed = Number(event.target.value);
+        document.querySelectorAll(".shape").forEach((shape) => {
+          const factor = parseFloat(shape.dataset.speedFactor ?? "1");
+          shape.style.animationDuration = `${(speed * factor).toFixed(2)}s`;
+        });
+        document.documentElement.style.setProperty("--animation-speed", `${speed}s`);
+      }
+
+      function newPrompt() {
+        const prompt = prompts[Math.floor(Math.random() * prompts.length)];
+        promptText.textContent = prompt;
+        promptOutput.textContent = `Try exploring: "${prompt}"`;
+      }
+
+      paletteButton.addEventListener("click", changePalette);
+      shapeButton.addEventListener("click", addShape);
+      clearShapesButton.addEventListener("click", clearShapes);
+      speedControl.addEventListener("input", updateSpeed);
+      promptButton.addEventListener("click", newPrompt);
+
+      // Initialise label for current palette to ensure colour control remains informative.
+      paletteLabel.textContent = "Tap the palette button to remix the background.";
+      paletteLabel.style.opacity = 0.9;
+    </script>
+  </body>
+</html>
