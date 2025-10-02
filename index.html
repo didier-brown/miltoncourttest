@@ -229,6 +229,8 @@ const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
 const hud=document.getElementById('hud');
 let W=0,H=0,DPR=1, FIXED=null;
 const gridOverlayCache={path:null, width:0, height:0, mode:'none', anchorVersion:-1, colsVersion:-1, rows:-1};
+const shadeCache={canvas:null, ctx:null, width:0, height:0, cover:-1, style:'', thickness:0, jitter:0, opacity:0, seed:0, color:''};
+const chalkState={count:0, passes:3, jitter:null, radius:null, updateCursor:0};
 function resize(){
   DPR=window.devicePixelRatio||1;
   if(FIXED){ W=FIXED.w; H=FIXED.h; }
@@ -918,6 +920,65 @@ const creativeScenes=[
 let shapes=[]; let shapeNames=presets.map(p=>p.name); let shapeGroups=[];
 let mode=0, paused=false, speedMul=parseFloat(speed.value), nowMs=0, previousTrailState=false;
 let dots=[];
+let last=0, lastDt=16;
+
+function ensureShadeCanvas(){
+  if(W<=0 || H<=0) return;
+  const needsNew=!shadeCache.canvas || shadeCache.width!==W || shadeCache.height!==H;
+  if(needsNew){
+    const canvas=(typeof OffscreenCanvas!=='undefined')? new OffscreenCanvas(W,H):document.createElement('canvas');
+    canvas.width=W; canvas.height=H;
+    shadeCache.canvas=canvas;
+    shadeCache.ctx=canvas.getContext('2d');
+    shadeCache.width=W;
+    shadeCache.height=H;
+    shadeCache.cover=-1;
+  }
+}
+
+function randomizeChalkDot(idx){
+  const total=chalkState.count;
+  if(total<=0 || !chalkState.jitter || !chalkState.radius) return;
+  const passes=chalkState.passes;
+  const baseJ=idx*passes*2;
+  const baseR=idx*passes;
+  for(let p=0;p<passes;p++){
+    chalkState.jitter[baseJ+p*2]=(Math.random()-0.5);
+    chalkState.jitter[baseJ+p*2+1]=(Math.random()-0.5);
+    chalkState.radius[baseR+p]=0.9 + Math.random()*0.4;
+  }
+}
+
+function syncChalkState(force=false){
+  const total=dots.length;
+  if(!force && chalkState.count===total && chalkState.jitter && chalkState.radius) return;
+  chalkState.count=total;
+  if(total<=0){
+    chalkState.jitter=null;
+    chalkState.radius=null;
+    chalkState.updateCursor=0;
+    return;
+  }
+  const passes=chalkState.passes;
+  chalkState.jitter=new Float32Array(total*passes*2);
+  chalkState.radius=new Float32Array(total*passes);
+  chalkState.updateCursor=0;
+  for(let i=0;i<total;i++) randomizeChalkDot(i);
+}
+
+function updateChalkState(dt){
+  if(!chalkState.jitter || chalkState.count<=0) return;
+  const total=chalkState.count;
+  const speed=Math.max(0.4, Math.min(3, dt/16));
+  const updates=Math.max(1, Math.floor(total*0.01*speed));
+  let idx=chalkState.updateCursor||0;
+  for(let n=0;n<updates;n++){
+    randomizeChalkDot(idx);
+    idx++;
+    if(idx>=total) idx=0;
+  }
+  chalkState.updateCursor=idx;
+}
 
 // Transition controller
 let trans={active:false, t:0, t1:600, t2:1800, t3:3200};
@@ -1208,6 +1269,7 @@ function initDots(){
     });
     return dot;
   });
+  syncChalkState(true);
 }
 
 function rebuildTargets(){
@@ -1245,6 +1307,7 @@ function rebuildTargets(){
     d.msStart=trans.t1 + staggerDelayFor(i, S0[i]);
   }
   renderList();
+  syncChalkState(true);
 }
 
 function safeRebuild(){
@@ -1383,6 +1446,7 @@ if(ui.wander){
 }
 if(ui.pulse){ ui.pulse.onchange=draw; }
 if(ui.trail){ ui.trail.onchange=draw; }
+if(ui.chalk){ ui.chalk.onchange=()=>{ syncChalkState(true); draw(); }; }
 if(ui.sceneInspire){ ui.sceneInspire.addEventListener('click', inspireScene); }
 
 // recording
@@ -1392,7 +1456,7 @@ let mediaRecorder=null, recChunks=[]; ui.rec.onclick=()=>{ try{ const fps=50; co
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault(); gotoShape(mode+1);} const n=+e.key; if(n>=1&&n<=9) gotoShape(n-1); });
 
 // animate
-let last=0,lastDt=16; function tick(ts){
+function tick(ts){
   requestAnimationFrame(tick);
   const rawDt=Math.min(32, ts-last||16);
   const speedFactor=Math.max(0.1, Number.isFinite(speedMul)?speedMul:1);
@@ -1508,15 +1572,98 @@ function jitter(id, seed, amp){
   }
   return base*amp;
 }
+function renderShadeLayer(targetCtx, params){
+  if(!targetCtx || !params) return;
+  const {cover, style, thicknessPx, jitterAmp, shadeColor, shadeGlow, seed, secondaryColor, gradStart, gradStop}=params;
+  targetCtx.save();
+  targetCtx.globalCompositeOperation='lighter';
+  targetCtx.shadowColor=shadeGlow;
+  targetCtx.lineCap='round';
+
+  for(const contour of currentOutline.contours){
+    if(!contour.fillPath || !contour.bounds) continue;
+    const b=contour.bounds;
+    const width=Math.max(1, b.width);
+    const height=Math.max(1, b.height);
+
+    targetCtx.save();
+    targetCtx.clip(contour.fillPath);
+
+    if(style==='segments'){
+      targetCtx.shadowBlur=thicknessPx*0.35;
+      const spacing=Math.max(6, thicknessPx*2);
+      const total=Math.ceil((width+height)/spacing);
+      const active=Math.max(1, Math.ceil(total*cover));
+      targetCtx.lineWidth=Math.max(1, thicknessPx*0.6);
+      targetCtx.strokeStyle=shadeColor;
+      for(let i=-total;i<active;i++){
+        const offset=i*spacing;
+        const x1=b.minX + offset;
+        const y1=b.minY;
+        const x2=x1 + height;
+        const y2=b.minY + height;
+        targetCtx.beginPath();
+        targetCtx.moveTo(x1 + jitter(i*7, seed, jitterAmp), y1 - height + jitter(i*7+1, seed, jitterAmp));
+        targetCtx.lineTo(x2 + jitter(i*7+2, seed, jitterAmp), y2 + jitter(i*7+3, seed, jitterAmp));
+        targetCtx.stroke();
+      }
+      targetCtx.lineWidth=Math.max(1, thicknessPx*0.45);
+      targetCtx.strokeStyle=secondaryColor;
+      for(let i=-active;i<active;i++){
+        const offset=i*spacing;
+        const x1=b.maxX - offset;
+        const y1=b.minY;
+        const x2=x1 - height;
+        const y2=b.minY + height;
+        targetCtx.beginPath();
+        targetCtx.moveTo(x1 + jitter(i*9, seed, jitterAmp), y1 + jitter(i*9+1, seed, jitterAmp));
+        targetCtx.lineTo(x2 + jitter(i*9+2, seed, jitterAmp), y2 + jitter(i*9+3, seed, jitterAmp));
+        targetCtx.stroke();
+      }
+    } else {
+      targetCtx.shadowBlur=thicknessPx*0.55;
+      const spacing=Math.max(4, thicknessPx*1.2);
+      const filledHeight=height*cover;
+      targetCtx.lineWidth=Math.max(1.1, thicknessPx);
+      targetCtx.strokeStyle=shadeColor;
+      const pad=Math.max(6, thicknessPx*2.2);
+      for(let row=0; row*spacing<=filledHeight; row++){
+        const y=b.minY + row*spacing;
+        const jitterX=jitter(row*5, seed, jitterAmp*1.2);
+        const jitterY=jitter(row*5+1, seed, jitterAmp*0.6);
+        targetCtx.beginPath();
+        targetCtx.moveTo(b.minX - pad + jitterX, y + jitterY);
+        targetCtx.lineTo(b.maxX + pad + jitterX, y + jitterY);
+        targetCtx.stroke();
+      }
+      const grad=targetCtx.createLinearGradient(b.minX, b.minY, b.minX, b.maxY);
+      const stop=Math.min(1, Math.max(0.01, cover));
+      grad.addColorStop(0, gradStart);
+      grad.addColorStop(stop, gradStop);
+      grad.addColorStop(Math.min(1, stop+0.0001), 'rgba(0,0,0,0)');
+      targetCtx.globalAlpha=0.6;
+      targetCtx.fillStyle=grad;
+      targetCtx.fillRect(b.minX-2, b.minY-2, width+4, height+4);
+      targetCtx.globalAlpha=1;
+    }
+
+    targetCtx.restore();
+  }
+
+  targetCtx.shadowColor='transparent';
+  targetCtx.shadowBlur=0;
+  targetCtx.restore();
+}
+
 function drawShadeOverlay(dotRadius){
-  if(!ui.shadeFill.checked || !currentOutline.fillPaths.length) return;
+  if(!ui.shadeFill.checked || !currentOutline.fillPaths.length){ shadeCache.cover=-1; return; }
   const duration=Math.max(100, parseFloat(ui.shadeMs.value)||1600);
   if(effects.shade.active){
     effects.shade.progress=Math.min(1, effects.shade.progress + (lastDt/duration));
     if(effects.shade.progress>=1){ effects.shade.active=false; }
   }
   const cover=Math.max(0, Math.min(1, effects.shade.progress));
-  if(cover<=0) return;
+  if(cover<=0){ shadeCache.cover=-1; return; }
   const style=(ui.shadeStyle&&ui.shadeStyle.value)||'ribbons';
   const thicknessSlider=parseFloat(ui.shadeThickness.value)||2.4;
   const thicknessPx=Math.max(0.4, thicknessSlider)*DPR;
@@ -1525,86 +1672,35 @@ function drawShadeOverlay(dotRadius){
   const opacity=Math.max(0.02, Math.min(1, parseFloat(ui.shadeOpacity.value)||0.25));
   const shadeColor=colorWithAlpha(palette.shade, opacity);
   const shadeGlow=colorWithAlpha(palette.shade, Math.min(1, opacity*0.7));
+  const secondaryColor=colorWithAlpha(palette.shade, opacity*0.5);
+  const gradStart=colorWithAlpha(palette.shade, opacity*0.12);
+  const gradStop=colorWithAlpha(palette.shade, opacity*0.65);
   const seed=effects.shade.seed||0;
+  const quantisedCover=Math.min(1, Math.max(0, Math.round(cover*180)/180));
 
-  ctx.save();
-  ctx.globalCompositeOperation='lighter';
-  ctx.shadowColor=shadeGlow;
-  ctx.lineCap='round';
+  ensureShadeCanvas();
+  const needsUpdate=!shadeCache.canvas || !shadeCache.ctx || shadeCache.cover!==quantisedCover || shadeCache.style!==style || shadeCache.thickness!==thicknessSlider || shadeCache.jitter!==jitterRatio || shadeCache.opacity!==opacity || shadeCache.seed!==seed || shadeCache.color!==palette.shade || shadeCache.width!==W || shadeCache.height!==H;
 
-  for(const contour of currentOutline.contours){
-    if(!contour.fillPath || !contour.bounds) continue;
-    const b=contour.bounds;
-    const width=Math.max(1, b.width);
-    const height=Math.max(1, b.height);
-
-    ctx.save();
-    ctx.clip(contour.fillPath);
-
-    if(style==='segments'){
-      ctx.shadowBlur=thicknessPx*0.35;
-      const spacing=Math.max(6, thicknessPx*2);
-      const total=Math.ceil((width+height)/spacing);
-      const active=Math.max(1, Math.ceil(total*cover));
-      ctx.lineWidth=Math.max(1, thicknessPx*0.6);
-      ctx.strokeStyle=shadeColor;
-      for(let i=-total;i<active;i++){
-        const offset=i*spacing;
-        const x1=b.minX + offset;
-        const y1=b.minY;
-        const x2=x1 + height;
-        const y2=b.minY + height;
-        ctx.beginPath();
-        ctx.moveTo(x1 + jitter(i*7, seed, jitterAmp), y1 - height + jitter(i*7+1, seed, jitterAmp));
-        ctx.lineTo(x2 + jitter(i*7+2, seed, jitterAmp), y2 + jitter(i*7+3, seed, jitterAmp));
-        ctx.stroke();
-      }
-      ctx.lineWidth=Math.max(1, thicknessPx*0.45);
-      ctx.strokeStyle=colorWithAlpha(palette.shade, opacity*0.5);
-      for(let i=-active;i<active;i++){
-        const offset=i*spacing;
-        const x1=b.maxX - offset;
-        const y1=b.minY;
-        const x2=x1 - height;
-        const y2=b.minY + height;
-        ctx.beginPath();
-        ctx.moveTo(x1 + jitter(i*9, seed, jitterAmp), y1 + jitter(i*9+1, seed, jitterAmp));
-        ctx.lineTo(x2 + jitter(i*9+2, seed, jitterAmp), y2 + jitter(i*9+3, seed, jitterAmp));
-        ctx.stroke();
-      }
-    } else {
-      ctx.shadowBlur=thicknessPx*0.55;
-      const spacing=Math.max(4, thicknessPx*1.2);
-      const filledHeight=height*cover;
-      ctx.lineWidth=Math.max(1.1, thicknessPx);
-      ctx.strokeStyle=shadeColor;
-      const pad=Math.max(6, thicknessPx*2.2);
-      for(let row=0; row*spacing<=filledHeight; row++){
-        const y=b.minY + row*spacing;
-        const jitterX=jitter(row*5, seed, jitterAmp*1.2);
-        const jitterY=jitter(row*5+1, seed, jitterAmp*0.6);
-        ctx.beginPath();
-        ctx.moveTo(b.minX - pad + jitterX, y + jitterY);
-        ctx.lineTo(b.maxX + pad + jitterX, y + jitterY);
-        ctx.stroke();
-      }
-      const grad=ctx.createLinearGradient(b.minX, b.minY, b.minX, b.maxY);
-      const stop=Math.min(1, Math.max(0.01, cover));
-      grad.addColorStop(0, colorWithAlpha(palette.shade, opacity*0.12));
-      grad.addColorStop(stop, colorWithAlpha(palette.shade, opacity*0.65));
-      grad.addColorStop(Math.min(1, stop+0.0001), 'rgba(0,0,0,0)');
-      ctx.globalAlpha=0.6;
-      ctx.fillStyle=grad;
-      ctx.fillRect(b.minX-2, b.minY-2, width+4, height+4);
-      ctx.globalAlpha=1;
-    }
-
-    ctx.restore();
+  if(needsUpdate && shadeCache.ctx){
+    shadeCache.ctx.clearRect(0,0,W,H);
+    renderShadeLayer(shadeCache.ctx,{cover:quantisedCover, style, thicknessPx, jitterAmp, shadeColor, shadeGlow, seed, secondaryColor, gradStart, gradStop});
+    shadeCache.cover=quantisedCover;
+    shadeCache.style=style;
+    shadeCache.thickness=thicknessSlider;
+    shadeCache.jitter=jitterRatio;
+    shadeCache.opacity=opacity;
+    shadeCache.seed=seed;
+    shadeCache.color=palette.shade;
+    shadeCache.width=W;
+    shadeCache.height=H;
   }
 
-  ctx.shadowColor='transparent';
-  ctx.shadowBlur=0;
-  ctx.restore();
+  if(shadeCache.canvas){
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    ctx.drawImage(shadeCache.canvas,0,0);
+    ctx.restore();
+  }
 }
 function drawTraceOverlay(r){
   if(!ui.traceOutline.checked || !currentOutline.contours.length) return;
@@ -1667,6 +1763,10 @@ function drawTraceOverlay(r){
 }
 
 function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*DPR; drawShadeOverlay(r); const useChalk=ui.chalk.checked;
+  if(useChalk){
+    syncChalkState();
+    updateChalkState(lastDt||16);
+  }
   if(ui.showGuide.checked && currentOutline.path){
     ctx.save();
     const guideColor=useChalk?colorWithAlpha(palette.dots,0.22):colorWithAlpha(palette.guide,0.18);
@@ -1708,6 +1808,10 @@ function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*
   }
   let revealFrac=1; if(ui.drawOn.checked && trans.active){ revealFrac=Math.min(1, Math.max(0, (trans.t - trans.t2)/Math.max(1,(trans.t3-trans.t2)) )); }
   const cutoff=Math.floor(revealFrac*dots.length);
+  const chalkPasses=useChalk?(chalkState.passes||3):1;
+  const jitterArr=useChalk?chalkState.jitter:null;
+  const radiusArr=useChalk?chalkState.radius:null;
+  const jitterScale=useChalk?(r*0.8):0;
   for(let i=0;i<dots.length;i++){
     const d=dots[i];
     const visible=(i<cutoff)||!ui.drawOn.checked;
@@ -1715,14 +1819,18 @@ function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*
     const radiusFactor=pulseOn?(0.75 + pulsePhase*0.45):1;
     const intensity=pulseOn?(0.7 + pulsePhase*0.5):1;
     const baseAlpha=(visible?0.38:0.06)*intensity;
-    const passes=useChalk?3:1;
+    const passes=useChalk?chalkPasses:1;
     for(let k=0;k<passes;k++){
-      const jx=useChalk?(Math.random()-0.5)*r*0.8:0;
-      const jy=useChalk?(Math.random()-0.5)*r*0.8:0;
+      let jx=0, jy=0, radius=r;
+      if(useChalk && jitterArr && radiusArr){
+        const idxBase=i*chalkPasses + k;
+        jx=jitterArr[idxBase*2]*jitterScale;
+        jy=jitterArr[idxBase*2+1]*jitterScale;
+        radius=r*(radiusArr[idxBase]||1);
+      }
       ctx.globalAlpha=Math.min(1, baseAlpha);
-      const radius=useChalk?(r*0.9 + Math.random()*0.4*r):r;
       ctx.beginPath();
-      ctx.arc(d.x+jx,d.y+jy,radius*radiusFactor,0,Math.PI*2);
+      ctx.arc(d.x+jx,d.y+jy,Math.max(0.1, radius*radiusFactor),0,Math.PI*2);
       ctx.fill();
     }
   }
@@ -1742,7 +1850,36 @@ regenerateShapes(); initDots(); safeRebuild(); gotoShape(mode); requestAnimation
 
 /* ---------- Self tests ---------- */
 function selfTests(){
-  console.log('Running self tests…'); const prevN=N, prevMode=mode; const tests=[
+  console.log('Running self tests…');
+  const prevState={
+    mode,
+    countValue: ui.count?ui.count.value:'0',
+    useGrid: ui.useGrid?ui.useGrid.checked:false,
+    snapMode: ui.snapMode?ui.snapMode.value:'shape',
+    gridRowsValue: ui.gridRows?ui.gridRows.value:'4',
+    gridColsValue: ui.gridCols?ui.gridCols.value:'',
+    lockGrid: ui.lockGrid?ui.lockGrid.checked:false,
+    gridWarnText: ui.gridWarn?ui.gridWarn.textContent:'',
+    gridWarnDisplay: ui.gridWarn?ui.gridWarn.style.display:'none',
+    cols: Array.isArray(grid.cols)?grid.cols.slice():[],
+    rows: grid.rows,
+    colsVersion: grid.colsVersion,
+    anchorVersion: grid.anchorVersion,
+    anchors: grid.anchorBase.map(a=>({x:a.x,y:a.y,g:a.g||0}))
+  };
+  const setCountValue=value=>{
+    if(!ui.count) return parseInt(value,10)||0;
+    ui.count.value=String(value);
+    if(typeof ui.count.dispatchEvent==='function'){
+      ui.count.dispatchEvent(new Event('input',{bubbles:true}));
+    } else if(typeof ui.count.oninput==='function'){
+      ui.count.oninput();
+    } else if(ui.countLbl){
+      ui.countLbl.textContent=ui.count.value;
+    }
+    return parseInt(ui.count.value,10)||0;
+  };
+  const tests=[
     {name:'ensureLength grow', fn:()=>ensureLength([{x:0,y:0,g:0}],5).length===5},
     {name:'ensureLength shrink', fn:()=>ensureLength([{x:0,y:0,g:0},{x:1,y:1,g:0},{x:2,y:2,g:0}],2).length===2},
     {name:'rectOutline exact N', fn:()=>rectOutline(1573, 400, 240).length===1573},
@@ -1753,9 +1890,35 @@ function selfTests(){
     {name:'grid snap zero columns safe', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV(''); safeRebuild(); return dots.length===parseInt(ui.count.value,10); }},
     {name:'grid snap one column safe (centreline)', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV('80'); safeRebuild(); return dots.every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)); }},
     {name:'grid snap invalid CSV robust', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV('80,,notnum, 100'); safeRebuild(); return dots.length===parseInt(ui.count.value,10); }},
-    {name:'rebuildTargets keeps dots==N', fn:()=>{ const prev=ui.count.value; ui.count.value=777; safeRebuild(); const ok=dots.length===777; ui.count.value=prev; safeRebuild(); return ok; }}
+    {name:'rebuildTargets keeps dots==N', fn:()=>{ const prev=ui.count?ui.count.value:'0'; const target=setCountValue(777); safeRebuild(); const ok=dots.length===target; setCountValue(prev); safeRebuild(); return ok; }}
   ];
-  const results=tests.map(t=>({test:t.name, pass:!!t.fn()})); console.table(results); const allPass=results.every(r=>r.pass); ui.count.value=prevN; safeRebuild(); mode=prevMode; alert(allPass?'Self tests passed':'Some tests failed — see console');
+  let results=[]; let allPass=false;
+  try{
+    results=tests.map(t=>({test:t.name, pass:!!t.fn()}));
+    console.table(results);
+    allPass=results.every(r=>r.pass);
+  } finally {
+    if(ui.useGrid) ui.useGrid.checked=prevState.useGrid;
+    if(ui.snapMode) ui.snapMode.value=prevState.snapMode;
+    if(ui.gridRows) ui.gridRows.value=prevState.gridRowsValue;
+    if(ui.gridCols) ui.gridCols.value=prevState.gridColsValue;
+    if(ui.lockGrid) ui.lockGrid.checked=prevState.lockGrid;
+    grid.cols=prevState.cols.slice();
+    grid.rows=prevState.rows;
+    grid.colsVersion=prevState.colsVersion+1;
+    grid.anchorVersion=prevState.anchorVersion;
+    invalidateOverlay();
+    setAnchorBase(prevState.anchors);
+    mode=prevState.mode;
+    setCountValue(prevState.countValue);
+    safeRebuild();
+    if(ui.gridWarn){
+      ui.gridWarn.textContent=prevState.gridWarnText;
+      ui.gridWarn.style.display=prevState.gridWarnDisplay||'none';
+    }
+  }
+  alert(allPass?'Self tests passed':'Some tests failed — see console');
+  return results;
 }
 ui.selfTest.onclick=selfTests;
 </script>
