@@ -920,6 +920,65 @@ const creativeScenes=[
 let shapes=[]; let shapeNames=presets.map(p=>p.name); let shapeGroups=[];
 let mode=0, paused=false, speedMul=parseFloat(speed.value), nowMs=0, previousTrailState=false;
 let dots=[];
+let last=0, lastDt=16;
+
+function ensureShadeCanvas(){
+  if(W<=0 || H<=0) return;
+  const needsNew=!shadeCache.canvas || shadeCache.width!==W || shadeCache.height!==H;
+  if(needsNew){
+    const canvas=(typeof OffscreenCanvas!=='undefined')? new OffscreenCanvas(W,H):document.createElement('canvas');
+    canvas.width=W; canvas.height=H;
+    shadeCache.canvas=canvas;
+    shadeCache.ctx=canvas.getContext('2d');
+    shadeCache.width=W;
+    shadeCache.height=H;
+    shadeCache.cover=-1;
+  }
+}
+
+function randomizeChalkDot(idx){
+  const total=chalkState.count;
+  if(total<=0 || !chalkState.jitter || !chalkState.radius) return;
+  const passes=chalkState.passes;
+  const baseJ=idx*passes*2;
+  const baseR=idx*passes;
+  for(let p=0;p<passes;p++){
+    chalkState.jitter[baseJ+p*2]=(Math.random()-0.5);
+    chalkState.jitter[baseJ+p*2+1]=(Math.random()-0.5);
+    chalkState.radius[baseR+p]=0.9 + Math.random()*0.4;
+  }
+}
+
+function syncChalkState(force=false){
+  const total=dots.length;
+  if(!force && chalkState.count===total && chalkState.jitter && chalkState.radius) return;
+  chalkState.count=total;
+  if(total<=0){
+    chalkState.jitter=null;
+    chalkState.radius=null;
+    chalkState.updateCursor=0;
+    return;
+  }
+  const passes=chalkState.passes;
+  chalkState.jitter=new Float32Array(total*passes*2);
+  chalkState.radius=new Float32Array(total*passes);
+  chalkState.updateCursor=0;
+  for(let i=0;i<total;i++) randomizeChalkDot(i);
+}
+
+function updateChalkState(dt){
+  if(!chalkState.jitter || chalkState.count<=0) return;
+  const total=chalkState.count;
+  const speed=Math.max(0.4, Math.min(3, dt/16));
+  const updates=Math.max(1, Math.floor(total*0.01*speed));
+  let idx=chalkState.updateCursor||0;
+  for(let n=0;n<updates;n++){
+    randomizeChalkDot(idx);
+    idx++;
+    if(idx>=total) idx=0;
+  }
+  chalkState.updateCursor=idx;
+}
 
 function ensureShadeCanvas(){
   if(W<=0 || H<=0) return;
@@ -1455,7 +1514,7 @@ let mediaRecorder=null, recChunks=[]; ui.rec.onclick=()=>{ try{ const fps=50; co
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault(); gotoShape(mode+1);} const n=+e.key; if(n>=1&&n<=9) gotoShape(n-1); });
 
 // animate
-let last=0,lastDt=16; function tick(ts){
+function tick(ts){
   requestAnimationFrame(tick);
   const rawDt=Math.min(32, ts-last||16);
   const speedFactor=Math.max(0.1, Number.isFinite(speedMul)?speedMul:1);
