@@ -259,6 +259,7 @@ const gridOverlayCache={path:null, width:0, height:0, mode:'none', anchorVersion
 const shadeCache={canvas:null, ctx:null, width:0, height:0, cover:-1, style:'', thickness:0, jitter:0, opacity:0, seed:0, color:''};
 const chalkState={count:0, passes:3, jitter:null, radius:null, updateCursor:0};
 let areaUiReady=false;
+let areaLayer;
 function resize(){
   DPR=window.devicePixelRatio||1;
   if(FIXED){ W=FIXED.w; H=FIXED.h; }
@@ -271,50 +272,86 @@ function resize(){
 }
 resize(); addEventListener('resize', ()=>{ if(!FIXED) { resize(); safeRebuild(); }});
 
+const el=id=>document.getElementById(id);
 const ui={
-  count:dotCount,countLbl:dotCountLbl,speed,speedLbl,size,sizeLbl,
-  svg:svgInput,add:addFromSVG,file:document.getElementById('file'),
-  list:shapeList,cycle, pause, selfTest, chalk:document.getElementById('chalk'),
-  drawOn:drawOn, showGuide:showGuide, durErase, durMove, durDraw,
-  fit:fitMode, pad:pad, res:res, rec:rec, stopRec:stopRec,
-  useGrid, showGrid, snapMode, snapAmt, snapAmtLbl,
-  gridRows, gridCols, gridFile, applyGrid, clearGrid,
-  gridFromInput:document.getElementById('gridFromInput'),
-  gridFromShape:document.getElementById('gridFromShape'),
-  lockGrid, traceOutline, shadeFill, traceMs, shadeMs,
-  colorDots:document.getElementById('colorDots'),
-  colorShade:document.getElementById('colorShade'),
-  colorGrid:document.getElementById('colorGrid'),
-  colorBgInner:document.getElementById('colorBgInner'),
-  colorBgOuter:document.getElementById('colorBgOuter'),
-  colorGuide:document.getElementById('colorGuide'),
-  shufflePalette:document.getElementById('shufflePalette'),
-  restorePalette:document.getElementById('restorePalette'),
-  shadeStyle:document.getElementById('shadeStyle'),
-  shadeThickness:document.getElementById('shadeThickness'),
-  shadeThicknessLbl:document.getElementById('shadeThicknessLbl'),
-  shadeOpacity:document.getElementById('shadeOpacity'),
-  shadeOpacityLbl:document.getElementById('shadeOpacityLbl'),
-  shadeJitter:document.getElementById('shadeJitter'),
-  shadeJitterLbl:document.getElementById('shadeJitterLbl'),
-  randomiseShade:document.getElementById('randomiseShade'),
-  randomiseAnim:document.getElementById('randomiseAnim'),
-  areaMode:document.getElementById('areaMode'),
-  areaColor:document.getElementById('areaColor'),
-  areaOpacity:document.getElementById('areaOpacity'),
-  areaOpacityLbl:document.getElementById('areaOpacityLbl'),
-  areaList:document.getElementById('areaList'),
-  areaRandom:document.getElementById('areaRandom'),
-  areaClear:document.getElementById('areaClear'),
-  flowCurve:document.getElementById('flowCurve'),
-  wander:document.getElementById('wander'),
-  wanderLbl:document.getElementById('wanderLbl'),
-  pulse:document.getElementById('pulse'),
-  trail:document.getElementById('trail'),
-  sceneInspire:document.getElementById('sceneInspire'),
-  sceneLabel:document.getElementById('sceneLabel'),
-  stagger, lag, gridWarn: document.getElementById('gridWarn')
+  count:el('dotCount'),
+  countLbl:el('dotCountLbl'),
+  speed:el('speed'),
+  speedLbl:el('speedLbl'),
+  size:el('size'),
+  sizeLbl:el('sizeLbl'),
+  svg:el('svgInput'),
+  add:el('addFromSVG'),
+  file:el('file'),
+  list:el('shapeList'),
+  cycle:el('cycle'),
+  pause:el('pause'),
+  selfTest:el('selfTest'),
+  chalk:el('chalk'),
+  drawOn:el('drawOn'),
+  showGuide:el('showGuide'),
+  durErase:el('durErase'),
+  durMove:el('durMove'),
+  durDraw:el('durDraw'),
+  fit:el('fitMode'),
+  pad:el('pad'),
+  res:el('res'),
+  rec:el('rec'),
+  stopRec:el('stopRec'),
+  useGrid:el('useGrid'),
+  showGrid:el('showGrid'),
+  snapMode:el('snapMode'),
+  snapAmt:el('snapAmt'),
+  snapAmtLbl:el('snapAmtLbl'),
+  gridRows:el('gridRows'),
+  gridCols:el('gridCols'),
+  gridFile:el('gridFile'),
+  applyGrid:el('applyGrid'),
+  clearGrid:el('clearGrid'),
+  gridFromInput:el('gridFromInput'),
+  gridFromShape:el('gridFromShape'),
+  lockGrid:el('lockGrid'),
+  traceOutline:el('traceOutline'),
+  shadeFill:el('shadeFill'),
+  traceMs:el('traceMs'),
+  shadeMs:el('shadeMs'),
+  colorDots:el('colorDots'),
+  colorShade:el('colorShade'),
+  colorGrid:el('colorGrid'),
+  colorBgInner:el('colorBgInner'),
+  colorBgOuter:el('colorBgOuter'),
+  colorGuide:el('colorGuide'),
+  shufflePalette:el('shufflePalette'),
+  restorePalette:el('restorePalette'),
+  shadeStyle:el('shadeStyle'),
+  shadeThickness:el('shadeThickness'),
+  shadeThicknessLbl:el('shadeThicknessLbl'),
+  shadeOpacity:el('shadeOpacity'),
+  shadeOpacityLbl:el('shadeOpacityLbl'),
+  shadeJitter:el('shadeJitter'),
+  shadeJitterLbl:el('shadeJitterLbl'),
+  randomiseShade:el('randomiseShade'),
+  randomiseAnim:el('randomiseAnim'),
+  areaMode:el('areaMode'),
+  areaColor:el('areaColor'),
+  areaOpacity:el('areaOpacity'),
+  areaOpacityLbl:el('areaOpacityLbl'),
+  areaList:el('areaList'),
+  areaRandom:el('areaRandom'),
+  areaClear:el('areaClear'),
+  flowCurve:el('flowCurve'),
+  wander:el('wander'),
+  wanderLbl:el('wanderLbl'),
+  pulse:el('pulse'),
+  trail:el('trail'),
+  sceneInspire:el('sceneInspire'),
+  sceneLabel:el('sceneLabel'),
+  stagger:el('stagger'),
+  lag:el('lag'),
+  gridWarn:el('gridWarn')
 };
+const missingUi=Object.entries(ui).filter(([,el])=>!el).map(([key])=>key);
+if(missingUi.length){ console.warn('Missing UI controls:', missingUi.join(', ')); }
 const eases={
   easeInOut:t=>t<0.5?2*t*t:1-(((-2*t+2)**2)/2),
   easeIn:t=>t*t,
@@ -968,7 +1005,7 @@ const creativeScenes=[
 ];
 
 let shapes=[]; let shapeNames=presets.map(p=>p.name); let shapeGroups=[];
-let mode=0, paused=false, speedMul=parseFloat(speed.value), nowMs=0, previousTrailState=false;
+let mode=0, paused=false, speedMul=parseFloat((ui.speed&&ui.speed.value)||'1')||1, nowMs=0, previousTrailState=false;
 let dots=[];
 let last=0, lastDt=16;
 
@@ -1055,29 +1092,42 @@ const jitterMemo=new Map();
 function invalidateOverlay(){ gridOverlayCache.path=null; }
 function isGridLocked(){ return !!(ui.lockGrid && ui.lockGrid.checked && grid.anchorBase.length); }
 function showLockWarning(){ if(ui.gridWarn){ ui.gridWarn.textContent='Grid locked to Milton Court. Disable lock to edit grid.'; ui.gridWarn.style.display='block'; } }
-ui.snapAmt.oninput=()=>ui.snapAmtLbl.textContent=parseFloat(ui.snapAmt.value).toFixed(2);
-ui.gridFile.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); autoColsFromSVG(txt); });
-ui.applyGrid.onclick=()=>{ applyGridFromCSV(ui.gridCols.value); };
-ui.clearGrid.onclick=()=>{
+if(ui.snapAmt && ui.snapAmtLbl){
+  ui.snapAmt.oninput=()=>ui.snapAmtLbl.textContent=parseFloat(ui.snapAmt.value).toFixed(2);
+}
+if(ui.gridFile){
+  ui.gridFile.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); autoColsFromSVG(txt); });
+}
+if(ui.applyGrid){
+  ui.applyGrid.onclick=()=>{ applyGridFromCSV(ui.gridCols?ui.gridCols.value:''); };
+}
+if(ui.clearGrid){
+  ui.clearGrid.onclick=()=>{
   if(isGridLocked()){ showLockWarning(); return; }
   grid.cols=[];
   grid.colsVersion++;
   invalidateOverlay();
   setAnchorBase([]);
-  ui.gridCols.value='';
-  ui.gridWarn.style.display='none';
+    if(ui.gridCols) ui.gridCols.value='';
+    if(ui.gridWarn){ ui.gridWarn.style.display='none'; ui.gridWarn.textContent=''; }
   safeRebuild();
-};
-ui.gridFromInput.onclick = ()=>{
-  const raw = ui.svg.value.trim();
+  };
+}
+if(ui.gridFromInput){
+  ui.gridFromInput.onclick = ()=>{
+  const raw = ui.svg && typeof ui.svg.value==='string' ? ui.svg.value.trim() : '';
   if(!raw){
-    ui.gridWarn.textContent='Textbox is empty.'; ui.gridWarn.style.display='block'; return;
+    if(ui.gridWarn){ ui.gridWarn.textContent='Textbox is empty.'; ui.gridWarn.style.display='block'; }
+    return;
   }
   setGridFromSVGAligned(raw);
-};
-ui.gridFromShape.onclick = ()=>{
-  setGridFromCurrentShape();
-};
+  };
+}
+if(ui.gridFromShape){
+  ui.gridFromShape.onclick = ()=>{
+    setGridFromCurrentShape();
+  };
+}
 
 function applyGridFromCSV(csv){
   if(isGridLocked()){ showLockWarning(); return; }
@@ -1323,7 +1373,10 @@ function initDots(){
 }
 
 function rebuildTargets(){
-  N = parseInt(ui.count.value,10); ui.countLbl.textContent=N; updateDurations(); regenerateShapes();
+  N = parseInt(ui.count.value,10);
+  if(ui.countLbl) ui.countLbl.textContent=N;
+  updateDurations();
+  regenerateShapes();
   const rawTargets = ensureLength(shapes[mode]||[], N).map((p,i)=>({x:p.x,y:p.y,g:shapeGroups[mode]?shapeGroups[mode][i]:0}));
   const snapped = applyGridSnap(rawTargets);
   const S0 = sanitizePoints(snapped);
@@ -1400,7 +1453,7 @@ function gotoShape(i){
 
 function renderList(){ ui.list.innerHTML=''; shapeNames.forEach((n,idx)=>{ const b=document.createElement('span'); b.textContent=(idx+1)+'. '+n; b.className='badge'; b.onclick=()=>gotoShape(idx); ui.list.appendChild(b); }); }
 
-const areaLayer={
+areaLayer={
   areas:[],
   nextId:1,
   dirty:true,
@@ -1413,6 +1466,7 @@ const areaLayer={
 areaLayer.ctx=areaLayer.canvas.getContext('2d');
 
 function ensureAreaCanvas(){
+  if(!areaLayer) return;
   const w=Math.max(1,W||cv.width||1);
   const h=Math.max(1,H||cv.height||1);
   if(areaLayer.canvas.width!==w || areaLayer.canvas.height!==h){
@@ -1421,7 +1475,7 @@ function ensureAreaCanvas(){
     areaLayer.dirty=true;
   }
 }
-function markAreaDirty(){ areaLayer.dirty=true; }
+function markAreaDirty(){ if(!areaLayer) return; areaLayer.dirty=true; }
 function rebuildAreaOverlay(){
   ensureAreaCanvas();
   const ctx=areaLayer.ctx;
@@ -1678,33 +1732,33 @@ function inspireScene(){
 }
 
 // Add custom SVG
-ui.add.onclick=()=>{
-  const raw=ui.svg.value.trim();
-  if(!raw) return;
-  const name='Custom '+(shapeNames.length+1);
-  presets.push({name, fn:()=>sampleSVG(raw, N)});
-  shapeNames.push(name);
-  // set grid to match this SVG (aligned to current fit/pad/canvas)
-  setGridFromSVGAligned(raw);
-  ui.svg.value='';
-  regenerateShapes(); renderList();
-};
-ui.file.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); ui.svg.value=txt; });
-ui.lockGrid.onchange=()=>{ if(!ui.lockGrid.checked && ui.gridWarn){ ui.gridWarn.style.display='none'; } resetEffects(); };
-ui.traceOutline.onchange=()=>{ resetEffects(); draw(); };
-ui.shadeFill.onchange=()=>{ resetEffects(); draw(); };
-ui.traceMs.onchange=()=>{ resetEffects(); draw(); };
-ui.shadeMs.onchange=()=>{ resetEffects(); draw(); };
-ui.shadeStyle.onchange=()=>{ resetEffects(); draw(); };
-const updateShadeThickness=()=>{ if(ui.shadeThicknessLbl){ ui.shadeThicknessLbl.textContent=`${parseFloat(ui.shadeThickness.value||0).toFixed(1)}px`; } };
-const updateShadeOpacity=()=>{ if(ui.shadeOpacityLbl){ ui.shadeOpacityLbl.textContent=parseFloat(ui.shadeOpacity.value||0).toFixed(2); } };
-const updateShadeJitter=()=>{ if(ui.shadeJitterLbl){ ui.shadeJitterLbl.textContent=`${parseFloat(ui.shadeJitter.value||0).toFixed(2)}×`; } };
-ui.shadeThickness.oninput=()=>{ updateShadeThickness(); draw(); };
-ui.shadeThickness.onchange=()=>{ updateShadeThickness(); resetEffects(); draw(); };
-ui.shadeOpacity.oninput=()=>{ updateShadeOpacity(); draw(); };
-ui.shadeOpacity.onchange=()=>{ updateShadeOpacity(); resetEffects(); draw(); };
-ui.shadeJitter.oninput=()=>{ updateShadeJitter(); draw(); };
-ui.shadeJitter.onchange=()=>{ updateShadeJitter(); resetEffects(); draw(); };
+if(ui.add){
+  ui.add.onclick=()=>{
+    const raw=ui.svg && typeof ui.svg.value==='string' ? ui.svg.value.trim() : '';
+    if(!raw) return;
+    const name='Custom '+(shapeNames.length+1);
+    presets.push({name, fn:()=>sampleSVG(raw, N)});
+    shapeNames.push(name);
+    setGridFromSVGAligned(raw);
+    if(ui.svg) ui.svg.value='';
+    regenerateShapes(); renderList();
+  };
+}
+if(ui.file){
+  ui.file.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); if(ui.svg) ui.svg.value=txt; });
+}
+if(ui.lockGrid){ ui.lockGrid.onchange=()=>{ if(!ui.lockGrid.checked && ui.gridWarn){ ui.gridWarn.style.display='none'; } resetEffects(); }; }
+if(ui.traceOutline){ ui.traceOutline.onchange=()=>{ resetEffects(); draw(); }; }
+if(ui.shadeFill){ ui.shadeFill.onchange=()=>{ resetEffects(); draw(); }; }
+if(ui.traceMs){ ui.traceMs.onchange=()=>{ resetEffects(); draw(); }; }
+if(ui.shadeMs){ ui.shadeMs.onchange=()=>{ resetEffects(); draw(); }; }
+if(ui.shadeStyle){ ui.shadeStyle.onchange=()=>{ resetEffects(); draw(); }; }
+const updateShadeThickness=()=>{ if(ui.shadeThickness && ui.shadeThicknessLbl){ ui.shadeThicknessLbl.textContent=`${parseFloat(ui.shadeThickness.value||0).toFixed(1)}px`; } };
+const updateShadeOpacity=()=>{ if(ui.shadeOpacity && ui.shadeOpacityLbl){ ui.shadeOpacityLbl.textContent=parseFloat(ui.shadeOpacity.value||0).toFixed(2); } };
+const updateShadeJitter=()=>{ if(ui.shadeJitter && ui.shadeJitterLbl){ ui.shadeJitterLbl.textContent=`${parseFloat(ui.shadeJitter.value||0).toFixed(2)}×`; } };
+if(ui.shadeThickness){ ui.shadeThickness.oninput=()=>{ updateShadeThickness(); draw(); }; ui.shadeThickness.onchange=()=>{ updateShadeThickness(); resetEffects(); draw(); }; }
+if(ui.shadeOpacity){ ui.shadeOpacity.oninput=()=>{ updateShadeOpacity(); draw(); }; ui.shadeOpacity.onchange=()=>{ updateShadeOpacity(); resetEffects(); draw(); }; }
+if(ui.shadeJitter){ ui.shadeJitter.oninput=()=>{ updateShadeJitter(); draw(); }; ui.shadeJitter.onchange=()=>{ updateShadeJitter(); resetEffects(); draw(); }; }
 if(ui.randomiseShade){ ui.randomiseShade.addEventListener('click', randomiseShadingControls); }
 if(ui.randomiseAnim){ ui.randomiseAnim.addEventListener('click', randomiseAnimationControls); }
 const updateAreaOpacityLabel=()=>{ if(ui.areaOpacity && ui.areaOpacityLbl){ ui.areaOpacityLbl.textContent=clampOpacity(ui.areaOpacity.value).toFixed(2); } };
@@ -1756,15 +1810,21 @@ cv.addEventListener('pointercancel', handleAreaPointerCancel);
 cv.addEventListener('pointerleave', handleAreaPointerCancel);
 
 // controls
-ui.cycle.onclick=()=>gotoShape(mode+1);
-ui.pause.onclick=()=>{paused=!paused; ui.pause.textContent=paused?'Play':'Pause';};
-ui.count.oninput=()=>ui.countLbl.textContent=ui.count.value; ui.count.onchange=safeRebuild;
-ui.speed.oninput=()=>{speedMul=parseFloat(ui.speed.value); ui.speedLbl.textContent=speedMul.toFixed(1)+'×';};
-ui.size.oninput=()=>ui.sizeLbl.textContent=ui.size.value;
-ui.durErase.onchange=updateDurations; ui.durMove.onchange=updateDurations; ui.durDraw.onchange=updateDurations;
-ui.fit.onchange=safeRebuild; ui.pad.onchange=safeRebuild;
-ui.useGrid.onchange=safeRebuild; ui.showGrid.onchange=()=>{}; ui.snapMode.onchange=safeRebuild; ui.gridRows.onchange=safeRebuild;
-ui.res.onchange=()=>{ const v=ui.res.value; if(v==='window'){ FIXED=null; } else { const [w,h]=v.split('x').map(Number); FIXED={w,h}; } resize(); safeRebuild(); };
+if(ui.cycle){ ui.cycle.onclick=()=>gotoShape(mode+1); }
+if(ui.pause){ ui.pause.onclick=()=>{ paused=!paused; ui.pause.textContent=paused?'Play':'Pause'; }; }
+if(ui.count){ ui.count.oninput=()=>{ if(ui.countLbl) ui.countLbl.textContent=ui.count.value; }; ui.count.onchange=safeRebuild; }
+if(ui.speed){ ui.speed.oninput=()=>{ speedMul=parseFloat(ui.speed.value); if(ui.speedLbl) ui.speedLbl.textContent=speedMul.toFixed(1)+'×'; }; }
+if(ui.size){ ui.size.oninput=()=>{ if(ui.sizeLbl) ui.sizeLbl.textContent=ui.size.value; }; }
+if(ui.durErase){ ui.durErase.onchange=updateDurations; }
+if(ui.durMove){ ui.durMove.onchange=updateDurations; }
+if(ui.durDraw){ ui.durDraw.onchange=updateDurations; }
+if(ui.fit){ ui.fit.onchange=safeRebuild; }
+if(ui.pad){ ui.pad.onchange=safeRebuild; }
+if(ui.useGrid){ ui.useGrid.onchange=safeRebuild; }
+if(ui.showGrid){ ui.showGrid.onchange=()=>{}; }
+if(ui.snapMode){ ui.snapMode.onchange=safeRebuild; }
+if(ui.gridRows){ ui.gridRows.onchange=safeRebuild; }
+if(ui.res){ ui.res.onchange=()=>{ const v=ui.res.value; if(v==='window'){ FIXED=null; } else { const [w,h]=v.split('x').map(Number); FIXED={w,h}; } resize(); safeRebuild(); }; }
 if(ui.flowCurve){
   ui.flowCurve.onchange=()=>{
     resetEffects();
@@ -1782,7 +1842,25 @@ if(ui.chalk){ ui.chalk.onchange=()=>{ syncChalkState(true); draw(); }; }
 if(ui.sceneInspire){ ui.sceneInspire.addEventListener('click', inspireScene); }
 
 // recording
-let mediaRecorder=null, recChunks=[]; ui.rec.onclick=()=>{ try{ const fps=50; const stream=cv.captureStream(fps); mediaRecorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp9'}); recChunks=[]; mediaRecorder.ondataavailable=e=>{ if(e.data.size>0) recChunks.push(e.data); }; mediaRecorder.onstop=()=>{ const blob=new Blob(recChunks,{type:'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; const ts=new Date().toISOString().replace(/[:.]/g,'-'); a.download=`blueprint-morph-${W}x${H}-${fps}fps-${ts}.webm`; a.click(); URL.revokeObjectURL(url); }; mediaRecorder.start(); }catch(err){ alert('Recording not supported: '+err); } }; ui.stopRec.onclick=()=>{ if(mediaRecorder&&mediaRecorder.state!=='inactive'){ mediaRecorder.stop(); mediaRecorder=null; } };
+let mediaRecorder=null, recChunks=[];
+if(ui.rec){
+  ui.rec.onclick=()=>{
+    try{
+      const fps=50;
+      const stream=cv.captureStream(fps);
+      mediaRecorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp9'});
+      recChunks=[];
+      mediaRecorder.ondataavailable=e=>{ if(e.data.size>0) recChunks.push(e.data); };
+      mediaRecorder.onstop=()=>{ const blob=new Blob(recChunks,{type:'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; const ts=new Date().toISOString().replace(/[:.]/g,'-'); a.download=`blueprint-morph-${W}x${H}-${fps}fps-${ts}.webm`; a.click(); URL.revokeObjectURL(url); };
+      mediaRecorder.start();
+    }catch(err){
+      alert('Recording not supported: '+err);
+    }
+  };
+}
+if(ui.stopRec){
+  ui.stopRec.onclick=()=>{ if(mediaRecorder&&mediaRecorder.state!=='inactive'){ mediaRecorder.stop(); mediaRecorder=null; } };
+}
 
 // keyboard
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault(); gotoShape(mode+1);} const n=+e.key; if(n>=1&&n<=9) gotoShape(n-1); });
@@ -2254,6 +2332,16 @@ function selfTests(){
   return results;
 }
 ui.selfTest.onclick=selfTests;
+window.morphApp={
+  get dots(){ return dots; },
+  get shapes(){ return shapes; },
+  get shapeNames(){ return shapeNames; },
+  get mode(){ return mode; },
+  get palette(){ return palette; },
+  gotoShape:(idx)=>gotoShape(idx),
+  applyPalette:()=>applyPalette(),
+  ui
+};
 </script>
 </body>
 </html>
