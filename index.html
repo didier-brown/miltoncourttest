@@ -22,11 +22,17 @@
   .col{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   button{background:#d8efe3;border:none;color:#10281f;padding:9px 12px;border-radius:10px;font-weight:700;cursor:pointer}
   button.secondary{background:#103126;color:#d8efe3;border:1px solid #1a5a47}
+  button.secondary.active{background:#1e5a45;color:#d8efe3;border-color:#2c8b6b}
   input[type=file]{display:none}
   label.file{padding:9px 12px;border:1px dashed #2a7a61;border-radius:10px;color:#c7eee1;cursor:pointer}
   .tiny{font-size:11px;color:#bde7da}
   .list{flex:1;overflow:auto;border:1px solid #1a5a47;border-radius:10px;padding:8px;background:#0c2a21;min-height:160px;max-height:260px}
   .badge{display:inline-block;padding:3px 7px;border-radius:8px;background:#0e372b;margin:3px 3px 0 0;border:1px solid #1a5a47;cursor:pointer}
+  .area-scroll{border:1px solid #1a5a47;border-radius:10px;padding:8px;background:#0c2a21;max-height:180px;overflow:auto;margin-top:6px}
+  .area-entry{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0;padding:4px 6px;background:#0b241c;border-radius:8px}
+  .area-chip{display:flex;align-items:center;gap:6px;color:#cbeee2;font-size:11px}
+  .area-swatch{width:18px;height:18px;border-radius:6px;border:1px solid #1a5a47}
+  .area-entry button{padding:4px 8px;font-size:11px;border-radius:8px}
   canvas{width:100%;height:100%;display:block;border:1px solid var(--line);border-radius:14px;background:#0f2f24}
   .hud{position:fixed;right:10px;bottom:10px;background:#0c2a21cc;border:1px solid #1a5a47;border-radius:10px;padding:8px 10px;font-size:11px;color:#cbeee2;max-width:50ch}
   .toggle{display:flex;align-items:center;gap:6px}
@@ -157,6 +163,26 @@
       <input id="shadeJitter" type="range" min="0" max="2" step="0.05" value="0.6">
       <span class="tiny" id="shadeJitterLbl">0.60×</span>
     </div>
+    <div class="row">
+      <button id="randomiseShade" class="secondary">Randomise shading</button>
+      <button id="randomiseAnim" class="secondary">Randomise animation</button>
+    </div>
+
+    <h2>Area fills</h2>
+    <div class="row toggle">
+      <input type="checkbox" id="areaMode">
+      <label for="areaMode" class="tiny">Enable area selection</label>
+    </div>
+    <div class="row">
+      <label class="tiny">Colour</label><input id="areaColor" type="color" value="#3bd6ff">
+      <label class="tiny">Opacity</label><input id="areaOpacity" type="range" min="0.05" max="0.9" step="0.05" value="0.35">
+      <span class="tiny" id="areaOpacityLbl">0.35</span>
+    </div>
+    <div class="row">
+      <button id="areaRandom" class="secondary">Randomise fills</button>
+      <button id="areaClear" class="secondary">Clear fills</button>
+    </div>
+    <div id="areaList" class="area-scroll"></div>
 
     <h2>Animation</h2>
     <div class="row toggle">
@@ -226,17 +252,22 @@
 
 <script>
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+cv.style.touchAction='none';
 const hud=document.getElementById('hud');
 let W=0,H=0,DPR=1, FIXED=null;
 const gridOverlayCache={path:null, width:0, height:0, mode:'none', anchorVersion:-1, colsVersion:-1, rows:-1};
 const shadeCache={canvas:null, ctx:null, width:0, height:0, cover:-1, style:'', thickness:0, jitter:0, opacity:0, seed:0, color:''};
 const chalkState={count:0, passes:3, jitter:null, radius:null, updateCursor:0};
+let areaUiReady=false;
 function resize(){
   DPR=window.devicePixelRatio||1;
   if(FIXED){ W=FIXED.w; H=FIXED.h; }
   else { const b=cv.getBoundingClientRect(); W=Math.round(b.width*DPR); H=Math.round(b.height*DPR); }
   cv.width=W; cv.height=H;
   invalidateOverlay();
+  ensureAreaCanvas();
+  markAreaDirty();
+  if(areaUiReady) renderAreaList();
 }
 resize(); addEventListener('resize', ()=>{ if(!FIXED) { resize(); safeRebuild(); }});
 
@@ -266,6 +297,15 @@ const ui={
   shadeOpacityLbl:document.getElementById('shadeOpacityLbl'),
   shadeJitter:document.getElementById('shadeJitter'),
   shadeJitterLbl:document.getElementById('shadeJitterLbl'),
+  randomiseShade:document.getElementById('randomiseShade'),
+  randomiseAnim:document.getElementById('randomiseAnim'),
+  areaMode:document.getElementById('areaMode'),
+  areaColor:document.getElementById('areaColor'),
+  areaOpacity:document.getElementById('areaOpacity'),
+  areaOpacityLbl:document.getElementById('areaOpacityLbl'),
+  areaList:document.getElementById('areaList'),
+  areaRandom:document.getElementById('areaRandom'),
+  areaClear:document.getElementById('areaClear'),
   flowCurve:document.getElementById('flowCurve'),
   wander:document.getElementById('wander'),
   wanderLbl:document.getElementById('wanderLbl'),
@@ -1360,6 +1400,262 @@ function gotoShape(i){
 
 function renderList(){ ui.list.innerHTML=''; shapeNames.forEach((n,idx)=>{ const b=document.createElement('span'); b.textContent=(idx+1)+'. '+n; b.className='badge'; b.onclick=()=>gotoShape(idx); ui.list.appendChild(b); }); }
 
+const areaLayer={
+  areas:[],
+  nextId:1,
+  dirty:true,
+  canvas:document.createElement('canvas'),
+  ctx:null,
+  preview:null,
+  drawing:false,
+  start:null
+};
+areaLayer.ctx=areaLayer.canvas.getContext('2d');
+
+function ensureAreaCanvas(){
+  const w=Math.max(1,W||cv.width||1);
+  const h=Math.max(1,H||cv.height||1);
+  if(areaLayer.canvas.width!==w || areaLayer.canvas.height!==h){
+    areaLayer.canvas.width=w;
+    areaLayer.canvas.height=h;
+    areaLayer.dirty=true;
+  }
+}
+function markAreaDirty(){ areaLayer.dirty=true; }
+function rebuildAreaOverlay(){
+  ensureAreaCanvas();
+  const ctx=areaLayer.ctx;
+  if(!ctx) return;
+  ctx.clearRect(0,0,areaLayer.canvas.width, areaLayer.canvas.height);
+  const baseW=areaLayer.canvas.width;
+  const baseH=areaLayer.canvas.height;
+  for(const area of areaLayer.areas){
+    if(!Number.isFinite(area.nx) || !Number.isFinite(area.ny)) continue;
+    const x=Math.max(0, area.nx*baseW);
+    const y=Math.max(0, area.ny*baseH);
+    const w=Math.max(1, area.nw*baseW);
+    const h=Math.max(1, area.nh*baseH);
+    ctx.fillStyle=colorWithAlpha(area.color || '#ffffff', area.opacity||0.3);
+    ctx.fillRect(x, y, w, h);
+  }
+  areaLayer.dirty=false;
+}
+function pointerToCanvas(e){
+  const rect=cv.getBoundingClientRect();
+  const scaleX = rect.width>0 ? (W/rect.width) : 1;
+  const scaleY = rect.height>0 ? (H/rect.height) : 1;
+  return {
+    x: (e.clientX-rect.left)*scaleX,
+    y: (e.clientY-rect.top)*scaleY
+  };
+}
+function describeArea(area){
+  const w=Math.round(area.nw*(W||cv.width||0));
+  const h=Math.round(area.nh*(H||cv.height||0));
+  return `${w}×${h}`;
+}
+function renderAreaList(){
+  if(!ui.areaList) return;
+  ui.areaList.innerHTML='';
+  if(!areaLayer.areas.length){
+    const empty=document.createElement('div');
+    empty.className='tiny';
+    empty.textContent=ui.areaMode && ui.areaMode.checked ? 'Drag on the canvas to add fills.' : 'Enable area selection to add fills.';
+    ui.areaList.appendChild(empty);
+    return;
+  }
+  for(const area of areaLayer.areas){
+    const row=document.createElement('div');
+    row.className='area-entry';
+    const chip=document.createElement('div');
+    chip.className='area-chip';
+    const swatch=document.createElement('span');
+    swatch.className='area-swatch';
+    swatch.style.background=area.color;
+    swatch.style.opacity=Math.max(0.05, Math.min(1, area.opacity));
+    chip.appendChild(swatch);
+    const label=document.createElement('span');
+    label.textContent=`${describeArea(area)} • ${Math.round((area.opacity||0)*100)}%`;
+    chip.appendChild(label);
+    row.appendChild(chip);
+    const btn=document.createElement('button');
+    btn.className='secondary';
+    btn.textContent='Remove';
+    btn.onclick=()=>{
+      areaLayer.areas=areaLayer.areas.filter(a=>a.id!==area.id);
+      markAreaDirty();
+      renderAreaList();
+      draw();
+    };
+    row.appendChild(btn);
+    ui.areaList.appendChild(row);
+  }
+}
+
+function clampOpacity(v){
+  const num=parseFloat(v);
+  if(!Number.isFinite(num)) return 0.35;
+  return Math.max(0.05, Math.min(0.9, num));
+}
+function commitArea(rect){
+  if(!rect) return;
+  const color=ui.areaColor?ui.areaColor.value:'#3bd6ff';
+  const opacity=clampOpacity(ui.areaOpacity?ui.areaOpacity.value:0.35);
+  const baseW=Math.max(1, W||cv.width||1);
+  const baseH=Math.max(1, H||cv.height||1);
+  const clampedX=Math.max(0, Math.min(baseW, rect.x));
+  const clampedY=Math.max(0, Math.min(baseH, rect.y));
+  const clampedW=Math.max(0, Math.min(baseW-clampedX, rect.w));
+  const clampedH=Math.max(0, Math.min(baseH-clampedY, rect.h));
+  if(clampedW<6 || clampedH<6) return;
+  areaLayer.areas.push({
+    id:areaLayer.nextId++,
+    nx:Math.max(0, Math.min(1, clampedX/baseW)),
+    ny:Math.max(0, Math.min(1, clampedY/baseH)),
+    nw:Math.max(0, Math.min(1, clampedW/baseW)),
+    nh:Math.max(0, Math.min(1, clampedH/baseH)),
+    color,
+    opacity
+  });
+  markAreaDirty();
+  renderAreaList();
+}
+function clearAreaPreview(){ areaLayer.preview=null; }
+function handleAreaPointerDown(e){
+  if(!ui.areaMode || !ui.areaMode.checked) return;
+  if(e.button!==0 && e.pointerType!=='touch' && e.pointerType!=='pen') return;
+  e.preventDefault();
+  const baseW=Math.max(1, W||cv.width||1);
+  const baseH=Math.max(1, H||cv.height||1);
+  const pos=pointerToCanvas(e);
+  const startX=Math.max(0, Math.min(baseW, pos.x));
+  const startY=Math.max(0, Math.min(baseH, pos.y));
+  areaLayer.drawing=true;
+  areaLayer.start={x:startX,y:startY};
+  areaLayer.preview={x:startX,y:startY,w:0,h:0};
+  if(cv.setPointerCapture){ try{ cv.setPointerCapture(e.pointerId); }catch(err){} }
+}
+function handleAreaPointerMove(e){
+  if(!areaLayer.drawing) return;
+  e.preventDefault();
+  const baseW=Math.max(1, W||cv.width||1);
+  const baseH=Math.max(1, H||cv.height||1);
+  const pos=pointerToCanvas(e);
+  const curX=Math.max(0, Math.min(baseW, pos.x));
+  const curY=Math.max(0, Math.min(baseH, pos.y));
+  const startX=Math.max(0, Math.min(baseW, areaLayer.start.x));
+  const startY=Math.max(0, Math.min(baseH, areaLayer.start.y));
+  const x=Math.min(curX, startX);
+  const y=Math.min(curY, startY);
+  const w=Math.abs(curX-startX);
+  const h=Math.abs(curY-startY);
+  areaLayer.preview={x,y,w,h};
+  draw();
+}
+function handleAreaPointerUp(e){
+  if(!areaLayer.drawing) return;
+  e.preventDefault();
+  if(cv.releasePointerCapture){ try{ cv.releasePointerCapture(e.pointerId); }catch(err){} }
+  const rect=areaLayer.preview;
+  areaLayer.drawing=false;
+  areaLayer.start=null;
+  clearAreaPreview();
+  commitArea(rect);
+  draw();
+}
+function handleAreaPointerCancel(e){
+  if(!areaLayer.drawing) return;
+  if(cv.releasePointerCapture){ try{ cv.releasePointerCapture(e.pointerId); }catch(err){} }
+  areaLayer.drawing=false;
+  areaLayer.start=null;
+  clearAreaPreview();
+  draw();
+}
+function drawAreaOverlay(){
+  if(!areaLayer.areas.length) return;
+  ensureAreaCanvas();
+  if(areaLayer.dirty) rebuildAreaOverlay();
+  if(!areaLayer.canvas.width || !areaLayer.canvas.height) return;
+  ctx.save();
+  ctx.globalCompositeOperation='source-over';
+  ctx.drawImage(areaLayer.canvas,0,0, W, H);
+  ctx.restore();
+}
+function drawAreaPreview(){
+  if(!areaLayer.preview) return;
+  const rect=areaLayer.preview;
+  ctx.save();
+  ctx.strokeStyle=colorWithAlpha(ui.areaColor?ui.areaColor.value:'#3bd6ff',0.9);
+  ctx.fillStyle=colorWithAlpha(ui.areaColor?ui.areaColor.value:'#3bd6ff',0.15);
+  ctx.lineWidth=1.2*DPR;
+  ctx.setLineDash([6*DPR,4*DPR]);
+  ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.restore();
+}
+function randomAreaColor(){
+  const h=Math.random()*360;
+  const s=0.38+Math.random()*0.3;
+  const l=0.35+Math.random()*0.3;
+  return hslToHex(h,s,l);
+}
+function randomiseShadingControls(){
+  if(ui.shadeStyle){ ui.shadeStyle.value=Math.random()>0.45?'segments':'ribbons'; }
+  if(ui.shadeThickness){
+    const v=(0.6+Math.random()*4.4).toFixed(2);
+    ui.shadeThickness.value=v;
+  }
+  if(ui.shadeOpacity){
+    const v=(0.10+Math.random()*0.6).toFixed(2);
+    ui.shadeOpacity.value=v;
+  }
+  if(ui.shadeJitter){
+    const v=(Math.random()*2).toFixed(2);
+    ui.shadeJitter.value=v;
+  }
+  if(ui.colorShade){ ui.colorShade.value=randomAreaColor(); }
+  updateShadeThickness();
+  updateShadeOpacity();
+  updateShadeJitter();
+  applyPalette();
+  resetEffects();
+  draw();
+}
+function randomiseAnimationControls(){
+  if(ui.flowCurve){
+    const opts=['easeInOut','easeIn','easeOut','cosine','bounce'];
+    ui.flowCurve.value=opts[Math.floor(Math.random()*opts.length)];
+  }
+  if(ui.wander){
+    const val=(Math.random()*0.8).toFixed(2);
+    ui.wander.value=val;
+    if(ui.wanderLbl) ui.wanderLbl.textContent=`${Math.round(parseFloat(val)*100)}%`;
+  }
+  if(ui.pulse){ ui.pulse.checked=Math.random()>0.5; }
+  if(ui.trail){ ui.trail.checked=Math.random()>0.65; }
+  if(ui.durErase){ ui.durErase.value=Math.round(300+Math.random()*900); }
+  if(ui.durMove){ ui.durMove.value=Math.round(900+Math.random()*1400); }
+  if(ui.durDraw){ ui.durDraw.value=Math.round(900+Math.random()*1600); }
+  updateDurations();
+  resetEffects();
+  gotoShape(mode);
+  draw();
+}
+function randomiseAreaFills(){
+  if(!areaLayer.areas.length){
+    if(ui.areaColor) ui.areaColor.value=randomAreaColor();
+    if(areaLayer.preview){ draw(); }
+    return;
+  }
+  for(const area of areaLayer.areas){
+    area.color=randomAreaColor();
+    area.opacity=clampOpacity(0.2+Math.random()*0.6);
+  }
+  markAreaDirty();
+  renderAreaList();
+  draw();
+}
+
 let lastSceneIndex=-1;
 function applyCreativeScene(index){
   const scene=creativeScenes[index];
@@ -1409,6 +1705,23 @@ ui.shadeOpacity.oninput=()=>{ updateShadeOpacity(); draw(); };
 ui.shadeOpacity.onchange=()=>{ updateShadeOpacity(); resetEffects(); draw(); };
 ui.shadeJitter.oninput=()=>{ updateShadeJitter(); draw(); };
 ui.shadeJitter.onchange=()=>{ updateShadeJitter(); resetEffects(); draw(); };
+if(ui.randomiseShade){ ui.randomiseShade.addEventListener('click', randomiseShadingControls); }
+if(ui.randomiseAnim){ ui.randomiseAnim.addEventListener('click', randomiseAnimationControls); }
+const updateAreaOpacityLabel=()=>{ if(ui.areaOpacity && ui.areaOpacityLbl){ ui.areaOpacityLbl.textContent=clampOpacity(ui.areaOpacity.value).toFixed(2); } };
+if(ui.areaOpacity){
+  ui.areaOpacity.addEventListener('input', ()=>{ updateAreaOpacityLabel(); if(areaLayer.preview){ draw(); } });
+  ui.areaOpacity.addEventListener('change', updateAreaOpacityLabel);
+}
+if(ui.areaColor){ ui.areaColor.addEventListener('input', ()=>{ if(areaLayer.preview){ draw(); } }); }
+if(ui.areaRandom){ ui.areaRandom.addEventListener('click', randomiseAreaFills); }
+if(ui.areaClear){ ui.areaClear.addEventListener('click', ()=>{ areaLayer.areas.length=0; markAreaDirty(); renderAreaList(); draw(); }); }
+if(ui.areaMode){
+  ui.areaMode.addEventListener('change', ()=>{
+    if(!ui.areaMode.checked && areaLayer.drawing){ areaLayer.drawing=false; areaLayer.start=null; clearAreaPreview(); }
+    renderAreaList();
+    draw();
+  });
+}
 ['colorDots','colorShade','colorGrid','colorBgInner','colorBgOuter','colorGuide'].forEach(key=>{
   if(ui[key]){
     ui[key].addEventListener('input', applyPalette);
@@ -1431,7 +1744,16 @@ if(ui.restorePalette){
 updateShadeThickness();
 updateShadeOpacity();
 updateShadeJitter();
+updateAreaOpacityLabel();
+areaUiReady=true;
+renderAreaList();
 applyPalette();
+
+cv.addEventListener('pointerdown', handleAreaPointerDown);
+cv.addEventListener('pointermove', handleAreaPointerMove);
+cv.addEventListener('pointerup', handleAreaPointerUp);
+cv.addEventListener('pointercancel', handleAreaPointerCancel);
+cv.addEventListener('pointerleave', handleAreaPointerCancel);
 
 // controls
 ui.cycle.onclick=()=>gotoShape(mode+1);
@@ -1772,7 +2094,7 @@ function drawTraceOverlay(r){
   ctx.restore();
 }
 
-function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*DPR; drawShadeOverlay(r); const useChalk=ui.chalk.checked;
+function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*DPR; drawShadeOverlay(r); drawAreaOverlay(); const useChalk=ui.chalk.checked;
   if(useChalk){
     syncChalkState();
     updateChalkState(lastDt||16);
@@ -1845,6 +2167,7 @@ function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*
     }
   }
   ctx.shadowBlur=0; ctx.globalAlpha=1;
+  drawAreaPreview();
   drawTraceOverlay(r);
   const phase=!trans.active?'idle':(trans.t<trans.t1?'erase':(trans.t<trans.t2?'move':(trans.t<trans.t3?'reveal':'hold')));
   const gridState = (!ui.useGrid.checked || !(grid.cols&&grid.cols.length)) ? 'off' : (grid.cols.length===1 ? 'centreline' : ui.snapMode.value);
