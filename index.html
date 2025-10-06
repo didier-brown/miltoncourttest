@@ -22,17 +22,11 @@
   .col{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   button{background:#d8efe3;border:none;color:#10281f;padding:9px 12px;border-radius:10px;font-weight:700;cursor:pointer}
   button.secondary{background:#103126;color:#d8efe3;border:1px solid #1a5a47}
-  button.secondary.active{background:#1e5a45;color:#d8efe3;border-color:#2c8b6b}
   input[type=file]{display:none}
   label.file{padding:9px 12px;border:1px dashed #2a7a61;border-radius:10px;color:#c7eee1;cursor:pointer}
   .tiny{font-size:11px;color:#bde7da}
   .list{flex:1;overflow:auto;border:1px solid #1a5a47;border-radius:10px;padding:8px;background:#0c2a21;min-height:160px;max-height:260px}
   .badge{display:inline-block;padding:3px 7px;border-radius:8px;background:#0e372b;margin:3px 3px 0 0;border:1px solid #1a5a47;cursor:pointer}
-  .area-scroll{border:1px solid #1a5a47;border-radius:10px;padding:8px;background:#0c2a21;max-height:180px;overflow:auto;margin-top:6px}
-  .area-entry{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0;padding:4px 6px;background:#0b241c;border-radius:8px}
-  .area-chip{display:flex;align-items:center;gap:6px;color:#cbeee2;font-size:11px}
-  .area-swatch{width:18px;height:18px;border-radius:6px;border:1px solid #1a5a47}
-  .area-entry button{padding:4px 8px;font-size:11px;border-radius:8px}
   canvas{width:100%;height:100%;display:block;border:1px solid var(--line);border-radius:14px;background:#0f2f24}
   .hud{position:fixed;right:10px;bottom:10px;background:#0c2a21cc;border:1px solid #1a5a47;border-radius:10px;padding:8px 10px;font-size:11px;color:#cbeee2;max-width:50ch}
   .toggle{display:flex;align-items:center;gap:6px}
@@ -127,6 +121,7 @@
     </div>
     <div class="row">
       <span class="tiny">Trace ms</span><input id="traceMs" type="number" value="1400" min="100" max="60000" step="100" style="width:90px">
+      <span class="tiny">Trace delay</span><input id="traceDelay" type="number" value="0" min="0" max="60000" step="100" style="width:90px">
       <span class="tiny">Shade ms</span><input id="shadeMs" type="number" value="1600" min="100" max="60000" step="100" style="width:90px">
     </div>
 
@@ -163,26 +158,6 @@
       <input id="shadeJitter" type="range" min="0" max="2" step="0.05" value="0.6">
       <span class="tiny" id="shadeJitterLbl">0.60×</span>
     </div>
-    <div class="row">
-      <button id="randomiseShade" class="secondary">Randomise shading</button>
-      <button id="randomiseAnim" class="secondary">Randomise animation</button>
-    </div>
-
-    <h2>Area fills</h2>
-    <div class="row toggle">
-      <input type="checkbox" id="areaMode">
-      <label for="areaMode" class="tiny">Enable area selection</label>
-    </div>
-    <div class="row">
-      <label class="tiny">Colour</label><input id="areaColor" type="color" value="#3bd6ff">
-      <label class="tiny">Opacity</label><input id="areaOpacity" type="range" min="0.05" max="0.9" step="0.05" value="0.35">
-      <span class="tiny" id="areaOpacityLbl">0.35</span>
-    </div>
-    <div class="row">
-      <button id="areaRandom" class="secondary">Randomise fills</button>
-      <button id="areaClear" class="secondary">Clear fills</button>
-    </div>
-    <div id="areaList" class="area-scroll"></div>
 
     <h2>Animation</h2>
     <div class="row toggle">
@@ -252,153 +227,55 @@
 
 <script>
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
-cv.style.touchAction='none';
 const hud=document.getElementById('hud');
 let W=0,H=0,DPR=1, FIXED=null;
 const gridOverlayCache={path:null, width:0, height:0, mode:'none', anchorVersion:-1, colsVersion:-1, rows:-1};
 const shadeCache={canvas:null, ctx:null, width:0, height:0, cover:-1, style:'', thickness:0, jitter:0, opacity:0, seed:0, color:''};
 const chalkState={count:0, passes:3, jitter:null, radius:null, updateCursor:0};
-let areaUiReady=false;
-let areaLayer;
 function resize(){
   DPR=window.devicePixelRatio||1;
   if(FIXED){ W=FIXED.w; H=FIXED.h; }
   else { const b=cv.getBoundingClientRect(); W=Math.round(b.width*DPR); H=Math.round(b.height*DPR); }
   cv.width=W; cv.height=H;
   invalidateOverlay();
-  ensureAreaCanvas();
-  markAreaDirty();
-  if(areaUiReady) renderAreaList();
 }
 resize(); addEventListener('resize', ()=>{ if(!FIXED) { resize(); safeRebuild(); }});
 
-const el=id=>document.getElementById(id);
 const ui={
-  count:el('dotCount'),
-  countLbl:el('dotCountLbl'),
-  speed:el('speed'),
-  speedLbl:el('speedLbl'),
-  size:el('size'),
-  sizeLbl:el('sizeLbl'),
-  svg:el('svgInput'),
-  add:el('addFromSVG'),
-  file:el('file'),
-  list:el('shapeList'),
-  cycle:el('cycle'),
-  pause:el('pause'),
-  selfTest:el('selfTest'),
-  chalk:el('chalk'),
-  drawOn:el('drawOn'),
-  showGuide:el('showGuide'),
-  durErase:el('durErase'),
-  durMove:el('durMove'),
-  durDraw:el('durDraw'),
-  fit:el('fitMode'),
-  pad:el('pad'),
-  res:el('res'),
-  rec:el('rec'),
-  stopRec:el('stopRec'),
-  useGrid:el('useGrid'),
-  showGrid:el('showGrid'),
-  snapMode:el('snapMode'),
-  snapAmt:el('snapAmt'),
-  snapAmtLbl:el('snapAmtLbl'),
-  gridRows:el('gridRows'),
-  gridCols:el('gridCols'),
-  gridFile:el('gridFile'),
-  applyGrid:el('applyGrid'),
-  clearGrid:el('clearGrid'),
-  gridFromInput:el('gridFromInput'),
-  gridFromShape:el('gridFromShape'),
-  lockGrid:el('lockGrid'),
-  traceOutline:el('traceOutline'),
-  shadeFill:el('shadeFill'),
-  traceMs:el('traceMs'),
-  shadeMs:el('shadeMs'),
-  colorDots:el('colorDots'),
-  colorShade:el('colorShade'),
-  colorGrid:el('colorGrid'),
-  colorBgInner:el('colorBgInner'),
-  colorBgOuter:el('colorBgOuter'),
-  colorGuide:el('colorGuide'),
-  shufflePalette:el('shufflePalette'),
-  restorePalette:el('restorePalette'),
-  shadeStyle:el('shadeStyle'),
-  shadeThickness:el('shadeThickness'),
-  shadeThicknessLbl:el('shadeThicknessLbl'),
-  shadeOpacity:el('shadeOpacity'),
-  shadeOpacityLbl:el('shadeOpacityLbl'),
-  shadeJitter:el('shadeJitter'),
-  shadeJitterLbl:el('shadeJitterLbl'),
-  randomiseShade:el('randomiseShade'),
-  randomiseAnim:el('randomiseAnim'),
-  areaMode:el('areaMode'),
-  areaColor:el('areaColor'),
-  areaOpacity:el('areaOpacity'),
-  areaOpacityLbl:el('areaOpacityLbl'),
-  areaList:el('areaList'),
-  areaRandom:el('areaRandom'),
-  areaClear:el('areaClear'),
-  flowCurve:el('flowCurve'),
-  wander:el('wander'),
-  wanderLbl:el('wanderLbl'),
-  pulse:el('pulse'),
-  trail:el('trail'),
-  sceneInspire:el('sceneInspire'),
-  sceneLabel:el('sceneLabel'),
-  stagger:el('stagger'),
-  lag:el('lag'),
-  gridWarn:el('gridWarn')
+  count:dotCount,countLbl:dotCountLbl,speed,speedLbl,size,sizeLbl,
+  svg:svgInput,add:addFromSVG,file:document.getElementById('file'),
+  list:shapeList,cycle, pause, selfTest, chalk:document.getElementById('chalk'),
+  drawOn:drawOn, showGuide:showGuide, durErase, durMove, durDraw,
+  fit:fitMode, pad:pad, res:res, rec:rec, stopRec:stopRec,
+  useGrid, showGrid, snapMode, snapAmt, snapAmtLbl,
+  gridRows, gridCols, gridFile, applyGrid, clearGrid,
+  gridFromInput:document.getElementById('gridFromInput'),
+  gridFromShape:document.getElementById('gridFromShape'),
+  lockGrid, traceOutline, shadeFill, traceMs, traceDelay:document.getElementById('traceDelay'), shadeMs,
+  colorDots:document.getElementById('colorDots'),
+  colorShade:document.getElementById('colorShade'),
+  colorGrid:document.getElementById('colorGrid'),
+  colorBgInner:document.getElementById('colorBgInner'),
+  colorBgOuter:document.getElementById('colorBgOuter'),
+  colorGuide:document.getElementById('colorGuide'),
+  shufflePalette:document.getElementById('shufflePalette'),
+  restorePalette:document.getElementById('restorePalette'),
+  shadeStyle:document.getElementById('shadeStyle'),
+  shadeThickness:document.getElementById('shadeThickness'),
+  shadeThicknessLbl:document.getElementById('shadeThicknessLbl'),
+  shadeOpacity:document.getElementById('shadeOpacity'),
+  shadeOpacityLbl:document.getElementById('shadeOpacityLbl'),
+  shadeJitter:document.getElementById('shadeJitter'),
+  shadeJitterLbl:document.getElementById('shadeJitterLbl'),
+  flowCurve:document.getElementById('flowCurve'),
+  wander:document.getElementById('wander'),
+  wanderLbl:document.getElementById('wanderLbl'),
+  pulse:document.getElementById('pulse'),
+  trail:document.getElementById('trail'),
+  sceneInspire:document.getElementById('sceneInspire'),
+  sceneLabel:document.getElementById('sceneLabel'),
+  stagger, lag, gridWarn: document.getElementById('gridWarn')
 };
-const missingUi=Object.entries(ui).filter(([,el])=>!el).map(([key])=>key);
-if(missingUi.length){ console.warn('Missing UI controls:', missingUi.join(', ')); }
-function safeInt(el, fallback){
-  const raw=el && typeof el.value==='string'?parseInt(el.value,10):NaN;
-  return Number.isFinite(raw)?raw:fallback;
-}
-function safeFloat(el, fallback){
-  const raw=el && typeof el.value==='string'?parseFloat(el.value):NaN;
-  return Number.isFinite(raw)?raw:fallback;
-}
-function safeBool(el){ return !!(el && el.checked); }
-function safeValue(el, fallback){
-  return (el && typeof el.value==='string')?el.value:fallback;
-}
-function getDotCount(){
-  const n=safeInt(ui.count, 3200);
-  return n>0?n:3200;
-}
-function getSpeedMultiplier(){
-  const v=safeFloat(ui.speed, 1);
-  return Math.max(0.1, Math.min(5, v||1));
-}
-function getDotSize(){
-  const v=safeFloat(ui.size, 1.6);
-  return Math.max(0.1, v||1.6);
-}
-function getPadValue(){
-  const v=safeFloat(ui.pad, 40);
-  return Math.max(0, v);
-}
-function getFitMode(){
-  const val=safeValue(ui.fit, 'contain');
-  return ['contain','cover','stretch'].includes(val)?val:'contain';
-}
-function getSnapMode(){
-  const mode=safeValue(ui.snapMode, 'none');
-  return ['shape','centreline','cell','quantise','none'].includes(mode)?mode:'none';
-}
-function getSnapStrength(){
-  const amt=safeFloat(ui.snapAmt, 0);
-  if(ui.snapAmtLbl && Number.isFinite(amt)){ ui.snapAmtLbl.textContent=amt.toFixed(2); }
-  return Math.max(0, Math.min(1, Number.isFinite(amt)?amt:0));
-}
-function getGridRowCount(){
-  const rows=safeInt(ui.gridRows, 4);
-  return Math.max(1, rows||4);
-}
-function isGridEnabled(){ return safeBool(ui.useGrid); }
-function isGridVisible(){ return safeBool(ui.showGrid); }
 const eases={
   easeInOut:t=>t<0.5?2*t*t:1-(((-2*t+2)**2)/2),
   easeIn:t=>t*t,
@@ -500,7 +377,7 @@ function setAnchorBase(points){
     grid.anchorSegments=[];
     grid.anchorTotalLen=0;
     grid.anchorVersion++; invalidateOverlay();
-    if(ui.snapMode && ui.snapMode.value==='shape'){ ui.snapMode.value='centreline'; }
+    if(ui.snapMode.value==='shape'){ ui.snapMode.value='centreline'; }
     resetEffects();
     return;
   }
@@ -596,12 +473,18 @@ function smoothAnchors(anchors){
 }
 function resetEffects(){
   if(ui.traceOutline && ui.traceOutline.checked && (currentOutline.totalLength||0)>0){
-    effects.trace.active=true;
+    const delayVal=ui.traceDelay?parseFloat(ui.traceDelay.value):0;
+    const delayMs=Math.max(0, Number.isFinite(delayVal)?delayVal:0);
+    effects.trace.active=false;
     effects.trace.progress=0;
     effects.trace.seed=Math.random()*1000;
+    effects.trace.pending=true;
+    effects.trace.startAtMs=(nowMs||0)+delayMs;
   } else {
     effects.trace.active=false;
     effects.trace.progress=1;
+    effects.trace.pending=false;
+    effects.trace.startAtMs=0;
   }
   if(ui.shadeFill && ui.shadeFill.checked && currentOutline.fillPaths.length){
     effects.shade.active=true;
@@ -698,8 +581,6 @@ function updateCurrentOutline(points, groups){
   currentOutline.totalLength=structure.totalLength;
   currentOutline.bounds=structure.bounds;
   resetEffects();
-  syncAreaFills();
-  markAreaDirty();
 }
 function previewAnchors(limit=800){
   if(!grid.anchorBase.length) return [];
@@ -920,7 +801,7 @@ function sampleSVG(input,total){
   let bbox; try{ bbox=hub.getBBox(); }catch{ bbox={x:0,y:0,width:W,height:H}; }
   const pts=[]; let gid=0; for(let i=0;i<nodes.length;i++){ const n=nodes[i]; const len=lens[i]; if(len<=0) {gid++; continue;} const share=Math.max(1,Math.round(total*(len/totalLen))); for(let j=0;j<share;j++){ const L=(share===1)? len*0.5 : j/(share-1)*len; try{ const p=n.getPointAtLength(L); if(Number.isFinite(p.x)&&Number.isFinite(p.y)) pts.push({x:p.x,y:p.y,g:gid}); }catch{} } gid++; }
   document.body.removeChild(hub);
-  const fitted=fitPoints(pts,bbox,W,H, getPadValue(), total, getFitMode());
+  const fitted=fitPoints(pts,bbox,W,H, parseFloat(ui.pad.value)||0, total, ui.fit.value);
   return sanitizePoints(fitted);
 }
 
@@ -937,11 +818,11 @@ function fitPoints(pts,bbox,w,h,pad=40,N=pts.length,mode='contain'){
 function circlePts(n,r){return ensureLength(Array.from({length:n},(_,i)=>{const a=i/n*2*Math.PI; return {x:W/2+r*Math.cos(a), y:H/2+r*Math.sin(a), g:0};}), n);} 
 function linePts(n,len){return ensureLength(Array.from({length:n},(_,i)=>({x:W/2-len/2 + i*(len/(n-1||1)), y:H/2, g:0})), n);} 
 function spiralPts(n,k){return ensureLength(Array.from({length:n},(_,i)=>{const a=i*0.09; return {x:W/2+k*a*Math.cos(a), y:H/2+k*a*Math.sin(a), g:0};}), n);} 
-function gridPts(n,cols,rows,step){const pts=[]; for(let r=0;r<rows;r++){for(let c=0;c<cols;c++){pts.push({x:W/2+(c-cols/2)*step, y:H/2+(r-rows/2)*step, g:0});}} return fitPoints(pts,{x:0,y:0,width:cols*step,height:rows*step},W,H,20,n,getFitMode());}
+function gridPts(n,cols,rows,step){const pts=[]; for(let r=0;r<rows;r++){for(let c=0;c<cols;c++){pts.push({x:W/2+(c-cols/2)*step, y:H/2+(r-rows/2)*step, g:0});}} return fitPoints(pts,{x:0,y:0,width:cols*step,height:rows*step},W,H,20,n,ui.fit.value);} 
 function rectOutline(n,w,h){ const p=[ {x:W/2-w/2, y:H/2-h/2}, {x:W/2+w/2, y:H/2-h/2}, {x:W/2+w/2, y:H/2+h/2}, {x:W/2-w/2, y:H/2+h/2} ]; return resamplePolyline(p, n, true); }
 
 /* ---------- presets ---------- */
-let N=getDotCount();
+let N=parseInt(ui.count.value,10);
 const presets=[
   {name:'Circle', fn:()=>circlePts(N, Math.min(W,H)*0.22)},
   {name:'Large Circle', fn:()=>circlePts(N, Math.min(W,H)*0.32)},
@@ -983,7 +864,10 @@ const creativeScenes=[
       if(ui.shadeThickness) ui.shadeThickness.value='2.4';
       if(ui.shadeOpacity) ui.shadeOpacity.value='0.25';
       if(ui.shadeJitter) ui.shadeJitter.value='0.6';
-      if(ui.snapAmt){ ui.snapAmt.value='0.6'; getSnapStrength(); }
+      if(ui.snapAmt){
+        ui.snapAmt.value='0.6';
+        if(ui.snapAmtLbl) ui.snapAmtLbl.textContent='0.60';
+      }
     }
   },
   {
@@ -1011,7 +895,10 @@ const creativeScenes=[
       if(ui.shadeThickness) ui.shadeThickness.value='3.2';
       if(ui.shadeOpacity) ui.shadeOpacity.value='0.45';
       if(ui.shadeJitter) ui.shadeJitter.value='1.1';
-      if(ui.snapAmt){ ui.snapAmt.value='0.8'; getSnapStrength(); }
+      if(ui.snapAmt){
+        ui.snapAmt.value='0.8';
+        if(ui.snapAmtLbl) ui.snapAmtLbl.textContent='0.80';
+      }
     }
   },
   {
@@ -1039,13 +926,16 @@ const creativeScenes=[
       if(ui.shadeThickness) ui.shadeThickness.value='1.8';
       if(ui.shadeOpacity) ui.shadeOpacity.value='0.18';
       if(ui.shadeJitter) ui.shadeJitter.value='0.4';
-      if(ui.snapAmt){ ui.snapAmt.value='0.4'; getSnapStrength(); }
+      if(ui.snapAmt){
+        ui.snapAmt.value='0.4';
+        if(ui.snapAmtLbl) ui.snapAmtLbl.textContent='0.40';
+      }
     }
   }
 ];
 
 let shapes=[]; let shapeNames=presets.map(p=>p.name); let shapeGroups=[];
-let mode=0, paused=false, speedMul=getSpeedMultiplier(), nowMs=0, previousTrailState=false;
+let mode=0, paused=false, speedMul=parseFloat(speed.value), nowMs=0, previousTrailState=false;
 let dots=[];
 let last=0, lastDt=16;
 
@@ -1109,20 +999,13 @@ function updateChalkState(dt){
 
 // Transition controller
 let trans={active:false, t:0, t1:600, t2:1800, t3:3200};
-function updateDurations(){
-  const a=Math.max(0, safeInt(ui.durErase, 600));
-  const b=Math.max(0, safeInt(ui.durMove, 1200));
-  const c=Math.max(0, safeInt(ui.durDraw, 1400));
-  trans.t1=a;
-  trans.t2=a+b;
-  trans.t3=a+b+c;
-}
+function updateDurations(){ const a=+ui.durErase.value||0, b=+ui.durMove.value||0, c=+ui.durDraw.value||0; trans.t1=a; trans.t2=a+b; trans.t3=a+b+c; }
 updateDurations();
 
 // Grid state
 let grid={cols:[], rows:4, anchorBase:[], anchorLookup:null, anchorSegments:[], anchorTotalLen:0, anchorVersion:0, colsVersion:0};
 const effects={
-  trace:{active:false,progress:1,seed:0},
+  trace:{active:false,progress:1,seed:0,startAtMs:0,pending:false},
   shade:{active:false,progress:1,seed:0}
 };
 const currentOutline={
@@ -1139,61 +1022,45 @@ const jitterMemo=new Map();
 function invalidateOverlay(){ gridOverlayCache.path=null; }
 function isGridLocked(){ return !!(ui.lockGrid && ui.lockGrid.checked && grid.anchorBase.length); }
 function showLockWarning(){ if(ui.gridWarn){ ui.gridWarn.textContent='Grid locked to Milton Court. Disable lock to edit grid.'; ui.gridWarn.style.display='block'; } }
-if(ui.snapAmt && ui.snapAmtLbl){
-  ui.snapAmt.oninput=()=>getSnapStrength();
-  getSnapStrength();
-}
-if(ui.gridFile){
-  ui.gridFile.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); autoColsFromSVG(txt); });
-}
-if(ui.applyGrid){
-  ui.applyGrid.onclick=()=>{ applyGridFromCSV(ui.gridCols?ui.gridCols.value:''); };
-}
-if(ui.clearGrid){
-  ui.clearGrid.onclick=()=>{
+ui.snapAmt.oninput=()=>ui.snapAmtLbl.textContent=parseFloat(ui.snapAmt.value).toFixed(2);
+ui.gridFile.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); autoColsFromSVG(txt); });
+ui.applyGrid.onclick=()=>{ applyGridFromCSV(ui.gridCols.value); };
+ui.clearGrid.onclick=()=>{
   if(isGridLocked()){ showLockWarning(); return; }
   grid.cols=[];
   grid.colsVersion++;
   invalidateOverlay();
   setAnchorBase([]);
-    if(ui.gridCols) ui.gridCols.value='';
-    if(ui.gridWarn){ ui.gridWarn.style.display='none'; ui.gridWarn.textContent=''; }
+  ui.gridCols.value='';
+  ui.gridWarn.style.display='none';
   safeRebuild();
-  };
-}
-if(ui.gridFromInput){
-  ui.gridFromInput.onclick = ()=>{
-  const raw = ui.svg && typeof ui.svg.value==='string' ? ui.svg.value.trim() : '';
+};
+ui.gridFromInput.onclick = ()=>{
+  const raw = ui.svg.value.trim();
   if(!raw){
-    if(ui.gridWarn){ ui.gridWarn.textContent='Textbox is empty.'; ui.gridWarn.style.display='block'; }
-    return;
+    ui.gridWarn.textContent='Textbox is empty.'; ui.gridWarn.style.display='block'; return;
   }
   setGridFromSVGAligned(raw);
-  };
-}
-if(ui.gridFromShape){
-  ui.gridFromShape.onclick = ()=>{
-    setGridFromCurrentShape();
-  };
-}
+};
+ui.gridFromShape.onclick = ()=>{
+  setGridFromCurrentShape();
+};
 
 function applyGridFromCSV(csv){
   if(isGridLocked()){ showLockWarning(); return; }
   const nums = String(csv||'').split(/[\s,;]+/).map(v=>parseFloat(v)).filter(v=>Number.isFinite(v));
   grid.cols = [...new Set(nums)].sort((a,b)=>a-b); // dedupe + sort
-  grid.rows = getGridRowCount();
+  grid.rows = Math.max(1, parseInt(ui.gridRows.value,10) || 1);
   grid.colsVersion++;
   invalidateOverlay();
   setAnchorBase([]);
-  if(ui.gridWarn){
-    if(grid.cols.length===0){ ui.gridWarn.textContent='No valid columns parsed. Grid snap will be disabled.'; ui.gridWarn.style.display='block'; }
-    else if(grid.cols.length===1){ ui.gridWarn.textContent='Single column provided. Using centreline snap only.'; ui.gridWarn.style.display='block'; }
-    else { ui.gridWarn.style.display='none'; }
-  }
+  if(grid.cols.length===0){ ui.gridWarn.textContent='No valid columns parsed. Grid snap will be disabled.'; ui.gridWarn.style.display='block'; }
+  else if(grid.cols.length===1){ ui.gridWarn.textContent='Single column provided. Using centreline snap only.'; ui.gridWarn.style.display='block'; }
+  else { ui.gridWarn.style.display='none'; }
   safeRebuild();
 }
 
-function autoColsFromSVG(svg){ if(isGridLocked()){ showLockWarning(); return; } try{ const doc=new DOMParser().parseFromString(svg,'image/svg+xml'); const xs=[]; doc.querySelectorAll('line,rect,path').forEach(el=>{ const tag=el.tagName.toLowerCase(); if(tag==='line'){ const x1=parseFloat(el.getAttribute('x1')); const x2=parseFloat(el.getAttribute('x2')); if(Number.isFinite(x1)&&Number.isFinite(x2)&&Math.abs(x1-x2)<1e-3) xs.push(x1); } else if(tag==='rect'){ const x=parseFloat(el.getAttribute('x')); if(Number.isFinite(x)) xs.push(x); const w=parseFloat(el.getAttribute('width')); if(Number.isFinite(x)&&Number.isFinite(w)) xs.push(x+w); } else if(tag==='path'){ try{ const L=el.getTotalLength(); const p0=el.getPointAtLength(0), p1=el.getPointAtLength(L); if(Math.abs(p0.x-p1.x)<1e-2) xs.push(p0.x); }catch{} } }); if(xs.length){ grid.cols=[...new Set(xs)].sort((a,b)=>a-b); grid.colsVersion++; invalidateOverlay(); setAnchorBase([]); if(ui.gridCols) ui.gridCols.value=grid.cols.join(', '); if(ui.gridWarn) ui.gridWarn.style.display='none'; safeRebuild(); } else { if(ui.gridWarn){ ui.gridWarn.textContent='No verticals found in SVG.'; ui.gridWarn.style.display='block'; } } }catch(e){ if(ui.gridWarn){ ui.gridWarn.textContent='Grid SVG parse failed.'; ui.gridWarn.style.display='block'; } }
+function autoColsFromSVG(svg){ if(isGridLocked()){ showLockWarning(); return; } try{ const doc=new DOMParser().parseFromString(svg,'image/svg+xml'); const xs=[]; doc.querySelectorAll('line,rect,path').forEach(el=>{ const tag=el.tagName.toLowerCase(); if(tag==='line'){ const x1=parseFloat(el.getAttribute('x1')); const x2=parseFloat(el.getAttribute('x2')); if(Number.isFinite(x1)&&Number.isFinite(x2)&&Math.abs(x1-x2)<1e-3) xs.push(x1); } else if(tag==='rect'){ const x=parseFloat(el.getAttribute('x')); if(Number.isFinite(x)) xs.push(x); const w=parseFloat(el.getAttribute('width')); if(Number.isFinite(x)&&Number.isFinite(w)) xs.push(x+w); } else if(tag==='path'){ try{ const L=el.getTotalLength(); const p0=el.getPointAtLength(0), p1=el.getPointAtLength(L); if(Math.abs(p0.x-p1.x)<1e-2) xs.push(p0.x); }catch{} } }); if(xs.length){ grid.cols=[...new Set(xs)].sort((a,b)=>a-b); grid.colsVersion++; invalidateOverlay(); setAnchorBase([]); ui.gridCols.value=grid.cols.join(', '); ui.gridWarn.style.display='none'; safeRebuild(); } else { ui.gridWarn.textContent='No verticals found in SVG.'; ui.gridWarn.style.display='block'; } }catch(e){ ui.gridWarn.textContent='Grid SVG parse failed.'; ui.gridWarn.style.display='block'; }
 }
 
 function setGridFromSVGAligned(svg, force=false){
@@ -1201,29 +1068,27 @@ function setGridFromSVGAligned(svg, force=false){
   try{
     const r = svgToAlignedGrid(svg);
     grid.cols = r.cols;
-    grid.rows = getGridRowCount();
+    grid.rows = Math.max(1, parseInt(ui.gridRows.value,10) || 1);
     grid.colsVersion++;
     invalidateOverlay();
-    if(ui.gridCols) ui.gridCols.value = grid.cols.join(', ');
+    ui.gridCols.value = grid.cols.join(', ');
     const anchorCount=Math.max(800, Math.min(6000, N||grid.anchorBase.length||3200));
     const anchorSample=sampleSVG(svg, anchorCount);
     setAnchorBase(anchorSample);
     if(!grid.cols.length){
-      if(ui.gridWarn){
-        ui.gridWarn.textContent='No vertical structure detected in SVG.';
-        ui.gridWarn.style.display='block';
-      }
-      if(!grid.anchorBase.length){ if(ui.useGrid) ui.useGrid.checked=false; }
-      else if(getSnapMode()==='shape' && ui.useGrid){ ui.useGrid.checked=true; }
+      ui.gridWarn.textContent='No vertical structure detected in SVG.';
+      ui.gridWarn.style.display='block';
+      if(!grid.anchorBase.length){ ui.useGrid.checked=false; }
+      else if(ui.snapMode.value==='shape'){ ui.useGrid.checked=true; }
       safeRebuild();
       return;
     }
-    if(ui.gridWarn){ ui.gridWarn.style.display='none'; }
-    if(ui.useGrid) ui.useGrid.checked = true;
+    ui.gridWarn.style.display='none';
+    ui.useGrid.checked = true;
     safeRebuild();
   }catch(e){
     console.warn(e);
-    if(ui.gridWarn){ ui.gridWarn.textContent='Grid SVG parse failed.'; ui.gridWarn.style.display='block'; }
+    ui.gridWarn.textContent='Grid SVG parse failed.'; ui.gridWarn.style.display='block';
   }
 }
 
@@ -1243,13 +1108,12 @@ function svgToAlignedGrid(svg){
 
   // Fit identical to fitPoints()
   let bbox={x:0,y:0,width:1,height:1}; try{ bbox=hub.getBBox(); }catch{}
-  const pad=getPadValue();
+  const pad=parseFloat(ui.pad.value)||0;
   const innerW=Math.max(0,W-2*pad), innerH=Math.max(0,H-2*pad);
   const sx=innerW/Math.max(1e-6,bbox.width), sy=innerH/Math.max(1e-6,bbox.height);
   let sX=sx, sY=sy;
-  const fit=getFitMode();
-  if(fit==='contain'){ const s=Math.min(sx,sy); sX=s; sY=s; }
-  else if(fit==='cover'){ const s=Math.max(sx,sy); sX=s; sY=s; }
+  if(ui.fit.value==='contain'){ const s=Math.min(sx,sy); sX=s; sY=s; }
+  else if(ui.fit.value==='cover'){ const s=Math.max(sx,sy); sX=s; sY=s; }
   const ox=(W-bbox.width*sX)/2 - bbox.x*sX;
   const oy=(H-bbox.height*sY)/2 - bbox.y*sY;
   const toX=x=>x*sX+ox, toY=y=>y*sY+oy;
@@ -1358,29 +1222,25 @@ function setGridFromCurrentShape(){
   }
   const cols=[...new Set(xs)].sort((a,b)=>a-b);
   if(!cols.length){
-    if(ui.gridWarn){ ui.gridWarn.textContent='Could not detect verticals in current shape.'; ui.gridWarn.style.display='block'; }
-    return;
+    ui.gridWarn.textContent='Could not detect verticals in current shape.'; ui.gridWarn.style.display='block'; return;
   }
   grid.cols=cols; grid.colsVersion++; invalidateOverlay();
-  if(ui.gridCols) ui.gridCols.value=cols.join(', ');
-  if(ui.gridWarn) ui.gridWarn.style.display='none';
-  if(ui.useGrid) ui.useGrid.checked=true;
+  ui.gridCols.value=cols.join(', '); ui.gridWarn.style.display='none'; ui.useGrid.checked=true;
   const groups = shapeGroups[mode]||[];
   const anchors = S.map((pt,i)=>({x:pt.x, y:pt.y, g: groups[i]||0}));
   setAnchorBase(anchors);
-  if(ui.snapMode && ui.snapMode.value!=='shape') ui.snapMode.value='shape';
+  if(ui.snapMode.value!=='shape') ui.snapMode.value='shape';
   safeRebuild();
 }
 
 function snapCentreline(points, cols, amt){ const xs=cols; return points.map(p=>{ let best=xs[0]; let bd=Infinity; for(const x of xs){ const d=Math.abs(p.x-x); if(d<bd){bd=d; best=x;} } const sx=best; return {x: p.x + (sx-p.x)*(amt||0), y:p.y, g:p.g||0}; }); }
 
 function applyGridSnap(points){
-  if(!isGridEnabled()) return points;
-  const amt=getSnapStrength(); if(amt<=0) return points;
-  const snapMode=getSnapMode();
-  if(snapMode==='none') return points;
-  if(snapMode==='shape'){
-    if(!grid.anchorBase.length){ if(ui.snapMode && ui.snapMode.value==='shape') ui.snapMode.value='centreline'; return points; }
+  if(!ui.useGrid.checked) return points;
+  const amt=parseFloat(ui.snapAmt.value)||0; if(amt<=0) return points;
+  if(ui.snapMode.value==='none') return points;
+  if(ui.snapMode.value==='shape'){
+    if(!grid.anchorBase.length){ if(ui.snapMode.value==='shape') ui.snapMode.value='centreline'; return points; }
     return points.map(p=>{
       const anchor=nearestAnchorPoint(p.x, p.y);
       const proj=projectToAnchorPoint(anchor, p);
@@ -1390,17 +1250,17 @@ function applyGridSnap(points){
       return {x: p.x + (sx-p.x)*amt, y: p.y + (sy-p.y)*amt, g:gTarget};
     });
   }
-  const rows=getGridRowCount();
+  const rows=Math.max(1, parseInt(ui.gridRows.value,10)||1);
   const cols=(grid.cols||[]).filter(Number.isFinite).sort((a,b)=>a-b);
   if(cols.length===0) return points;
-  if(snapMode==='centreline' || cols.length===1){ return snapCentreline(points, cols, amt); }
+  if(ui.snapMode.value==='centreline' || cols.length===1){ return snapCentreline(points, cols, amt); }
   const centres=[]; for(let i=0;i<cols.length-1;i++){ centres.push((cols[i]+cols[i+1])/2); }
   const cellH=H/rows;
   function cellIdx(x){ let ci=0; while(ci<cols.length-1 && x>cols[ci+1]) ci++; return Math.max(0,Math.min(centres.length-1,ci)); }
   function rowIdx(y){ return Math.max(0, Math.min(rows-1, Math.floor(y/cellH))); }
   return points.map(p=>{
     let sx=p.x, sy=p.y;
-    if(snapMode==='cell' || snapMode==='quantise'){
+    if(ui.snapMode.value==='cell' || ui.snapMode.value==='quantise'){
       const ci=cellIdx(p.x); sx=centres[ci]; const ri=rowIdx(p.y); sy=ri*cellH + cellH/2;
     }
     return {x: p.x + (sx-p.x)*amt, y: p.y + (sy-p.y)*amt, g:p.g||0};
@@ -1430,10 +1290,7 @@ function initDots(){
 }
 
 function rebuildTargets(){
-  N = getDotCount();
-  if(ui.countLbl) ui.countLbl.textContent=String(N);
-  updateDurations();
-  regenerateShapes();
+  N = parseInt(ui.count.value,10); ui.countLbl.textContent=N; updateDurations(); regenerateShapes();
   const rawTargets = ensureLength(shapes[mode]||[], N).map((p,i)=>({x:p.x,y:p.y,g:shapeGroups[mode]?shapeGroups[mode][i]:0}));
   const snapped = applyGridSnap(rawTargets);
   const S0 = sanitizePoints(snapped);
@@ -1478,20 +1335,14 @@ function safeRebuild(){
     for(const d of dots){ if(!finite(d.x)||!finite(d.y)||!finite(d.tx)||!finite(d.ty)){ throw new Error('Non-finite after rebuild'); } }
   }catch(err){
     console.warn('Rebuild failed, falling back', err);
-    if(ui.useGrid) ui.useGrid.checked=false;
-    if(ui.gridWarn){
-      ui.gridWarn.textContent='Grid settings caused an issue, so snap was disabled automatically.';
-      ui.gridWarn.style.display='block';
-    }
+    ui.useGrid.checked=false; ui.gridWarn.textContent='Grid settings caused an issue, so snap was disabled automatically.'; ui.gridWarn.style.display='block';
     // minimal reset
     grid.cols=[]; grid.colsVersion++; invalidateOverlay(); setAnchorBase([]); rebuildTargets();
   }
 }
 
 function staggerDelayFor(i, pt){
-  const mode=safeValue(ui.stagger, 'none');
-  const lag=Math.max(0, safeInt(ui.lag, 0));
-  if(mode==='none'||lag<=0) return 0;
+  const mode=ui.stagger.value; const lag=+ui.lag.value||0; if(mode==='none'||lag<=0) return 0;
   let n=0; if(mode==='path'){ n=(shapeGroups[modeIndex()]?shapeGroups[modeIndex()][i]:0); const max=Math.max(...(shapeGroups[modeIndex()]||[0])); return (n/(Math.max(1,max))) * lag; }
   if(mode==='x'){ return (pt.x/W) * lag; } if(mode==='y'){ return (pt.y/H) * lag; } return 0;
 }
@@ -1514,319 +1365,7 @@ function gotoShape(i){
   trans.active=true; trans.t=0; updateDurations();
 }
 
-function renderList(){
-  if(!ui.list) return;
-  ui.list.innerHTML='';
-  shapeNames.forEach((n,idx)=>{
-    const b=document.createElement('span');
-    b.textContent=(idx+1)+'. '+n;
-    b.className='badge';
-    b.onclick=()=>gotoShape(idx);
-    ui.list.appendChild(b);
-  });
-}
-
-areaLayer={
-  fills:[],
-  nextId:1,
-  dirty:true,
-  canvas:document.createElement('canvas'),
-  ctx:null,
-  preview:null
-};
-areaLayer.ctx=areaLayer.canvas.getContext('2d');
-
-function ensureAreaCanvas(){
-  if(!areaLayer) return;
-  const w=Math.max(1,W||cv.width||1);
-  const h=Math.max(1,H||cv.height||1);
-  if(areaLayer.canvas.width!==w || areaLayer.canvas.height!==h){
-    areaLayer.canvas.width=w;
-    areaLayer.canvas.height=h;
-    areaLayer.dirty=true;
-  }
-}
-function markAreaDirty(){ if(!areaLayer) return; areaLayer.dirty=true; }
-function hitTestContour(x,y){
-  if(!currentOutline.contours.length) return null;
-  for(let i=currentOutline.contours.length-1;i>=0;i--){
-    const contour=currentOutline.contours[i];
-    if(!contour || !contour.fillPath) continue;
-    try{
-      if(ctx.isPointInPath(contour.fillPath, x, y)) return i;
-    }catch(err){ }
-  }
-  return null;
-}
-function rebuildAreaOverlay(){
-  ensureAreaCanvas();
-  const aCtx=areaLayer.ctx;
-  if(!aCtx) return;
-  aCtx.clearRect(0,0,areaLayer.canvas.width, areaLayer.canvas.height);
-  for(const fill of areaLayer.fills){
-    const contour=currentOutline.contours[fill.contour];
-    if(!contour || !contour.fillPath) continue;
-    aCtx.save();
-    aCtx.fillStyle=colorWithAlpha(fill.color || '#ffffff', fill.opacity||0.3);
-    aCtx.fill(contour.fillPath);
-    aCtx.restore();
-  }
-  areaLayer.dirty=false;
-}
-function pointerToCanvas(e){
-  const rect=cv.getBoundingClientRect();
-  const scaleX = rect.width>0 ? (W/rect.width) : 1;
-  const scaleY = rect.height>0 ? (H/rect.height) : 1;
-  return {
-    x: (e.clientX-rect.left)*scaleX,
-    y: (e.clientY-rect.top)*scaleY
-  };
-}
-function describeArea(fill){
-  const contour=currentOutline.contours[fill.contour];
-  if(contour && contour.bounds){
-    const w=Math.round(contour.bounds.width||0);
-    const h=Math.round(contour.bounds.height||0);
-    if(Number.isFinite(w) && Number.isFinite(h)){
-      return `Region ${fill.contour+1} (${w}×${h})`;
-    }
-  }
-  return `Region ${fill.contour+1}`;
-}
-function renderAreaList(){
-  if(!ui.areaList) return;
-  ui.areaList.innerHTML='';
-  if(!areaLayer.fills.length){
-    const empty=document.createElement('div');
-    empty.className='tiny';
-    const hasRegions=currentOutline.contours.some(c=>c && c.fillPath);
-    if(!hasRegions){
-      empty.textContent='Current shape has no closed regions to fill.';
-    }else if(ui.areaMode && ui.areaMode.checked){
-      empty.textContent='Click inside a closed shape to add a fill.';
-    }else{
-      empty.textContent='Enable area selection then click inside a region to add fills.';
-    }
-    ui.areaList.appendChild(empty);
-    return;
-  }
-  for(const fill of areaLayer.fills){
-    const row=document.createElement('div');
-    row.className='area-entry';
-    const chip=document.createElement('div');
-    chip.className='area-chip';
-    const swatch=document.createElement('span');
-    swatch.className='area-swatch';
-    swatch.style.background=fill.color;
-    swatch.style.opacity=Math.max(0.05, Math.min(1, fill.opacity));
-    chip.appendChild(swatch);
-    const label=document.createElement('span');
-    label.textContent=`${describeArea(fill)} • ${Math.round((fill.opacity||0)*100)}%`;
-    chip.appendChild(label);
-    row.appendChild(chip);
-    const btn=document.createElement('button');
-    btn.className='secondary';
-    btn.textContent='Remove';
-    btn.onclick=()=>{
-      areaLayer.fills=areaLayer.fills.filter(a=>a.id!==fill.id);
-      markAreaDirty();
-      renderAreaList();
-      draw();
-    };
-    row.appendChild(btn);
-    ui.areaList.appendChild(row);
-  }
-}
-
-function clampOpacity(v){
-  const num=parseFloat(v);
-  if(!Number.isFinite(num)) return 0.35;
-  return Math.max(0.05, Math.min(0.9, num));
-}
-function syncAreaFills(){
-  if(!areaLayer) return;
-  const valid=new Set();
-  for(let i=0;i<currentOutline.contours.length;i++){
-    const contour=currentOutline.contours[i];
-    if(contour && contour.fillPath) valid.add(i);
-  }
-  const before=areaLayer.fills.length;
-  areaLayer.fills=areaLayer.fills.filter(fill=>valid.has(fill.contour));
-  if(areaLayer.preview && !valid.has(areaLayer.preview.contour)){
-    areaLayer.preview=null;
-  }
-  if(before!==areaLayer.fills.length){
-    markAreaDirty();
-  }
-  if(areaUiReady) renderAreaList();
-}
-function applyFillToContour(contourIndex, opts={}){
-  if(contourIndex==null || contourIndex<0) return;
-  const contour=currentOutline.contours[contourIndex];
-  if(!contour || !contour.fillPath) return;
-  const color=opts.color ?? (ui.areaColor?ui.areaColor.value:'#3bd6ff');
-  const opacity=clampOpacity(opts.opacity ?? (ui.areaOpacity?ui.areaOpacity.value:0.35));
-  const existing=areaLayer.fills.find(f=>f.contour===contourIndex);
-  if(existing){
-    existing.color=color;
-    existing.opacity=opacity;
-  } else {
-    areaLayer.fills.push({id:areaLayer.nextId++, contour:contourIndex, color, opacity});
-  }
-  markAreaDirty();
-  renderAreaList();
-}
-function setAreaPreview(index){
-  if(index==null || index<0){
-    if(areaLayer.preview){ areaLayer.preview=null; }
-    return;
-  }
-  const contour=currentOutline.contours[index];
-  if(!contour || !contour.fillPath){ areaLayer.preview=null; return; }
-  areaLayer.preview={contour:index};
-}
-function clearAreaPreview(){
-  if(!areaLayer.preview) return;
-  areaLayer.preview=null;
-}
-function handleAreaPointerDown(e){
-  if(!ui.areaMode || !ui.areaMode.checked) return;
-  if(e.button!==0 && e.pointerType!=='touch' && e.pointerType!=='pen') return;
-  e.preventDefault();
-  const pos=pointerToCanvas(e);
-  const hit=hitTestContour(pos.x,pos.y);
-  setAreaPreview(hit);
-  draw();
-}
-function handleAreaPointerMove(e){
-  if(!ui.areaMode || !ui.areaMode.checked){
-    if(areaLayer.preview){ clearAreaPreview(); draw(); }
-    return;
-  }
-  const pos=pointerToCanvas(e);
-  const hit=hitTestContour(pos.x,pos.y);
-  const prev=areaLayer.preview?areaLayer.preview.contour:null;
-  if(hit!==prev){
-    setAreaPreview(hit);
-    draw();
-  }
-}
-function handleAreaPointerUp(e){
-  if(!ui.areaMode || !ui.areaMode.checked) return;
-  e.preventDefault();
-  const pos=pointerToCanvas(e);
-  const hit=hitTestContour(pos.x,pos.y);
-  if(hit!=null){
-    applyFillToContour(hit);
-    draw();
-  }
-}
-function handleAreaPointerCancel(){
-  if(!areaLayer.preview) return;
-  clearAreaPreview();
-  draw();
-}
-function drawAreaOverlay(){
-  if(!areaLayer.fills.length) return;
-  ensureAreaCanvas();
-  if(areaLayer.dirty) rebuildAreaOverlay();
-  if(!areaLayer.canvas.width || !areaLayer.canvas.height) return;
-  ctx.save();
-  ctx.globalCompositeOperation='source-over';
-  ctx.drawImage(areaLayer.canvas,0,0, W, H);
-  ctx.restore();
-}
-function drawAreaPreview(){
-  if(!areaLayer.preview) return;
-  const contour=currentOutline.contours[areaLayer.preview.contour];
-  if(!contour || !contour.fillPath) return;
-  ctx.save();
-  ctx.strokeStyle=colorWithAlpha(ui.areaColor?ui.areaColor.value:'#3bd6ff',0.9);
-  ctx.fillStyle=colorWithAlpha(ui.areaColor?ui.areaColor.value:'#3bd6ff',0.18);
-  ctx.lineWidth=1.4*DPR;
-  ctx.setLineDash([6*DPR,4*DPR]);
-  ctx.stroke(contour.fillPath);
-  ctx.fill(contour.fillPath);
-  ctx.restore();
-}
-function randomAreaColor(){
-  const h=Math.random()*360;
-  const s=0.38+Math.random()*0.3;
-  const l=0.35+Math.random()*0.3;
-  return hslToHex(h,s,l);
-}
-function randomiseShadingControls(){
-  if(ui.shadeStyle){ ui.shadeStyle.value=Math.random()>0.45?'segments':'ribbons'; }
-  if(ui.shadeThickness){
-    const v=(0.6+Math.random()*4.4).toFixed(2);
-    ui.shadeThickness.value=v;
-  }
-  if(ui.shadeOpacity){
-    const v=(0.10+Math.random()*0.6).toFixed(2);
-    ui.shadeOpacity.value=v;
-  }
-  if(ui.shadeJitter){
-    const v=(Math.random()*2).toFixed(2);
-    ui.shadeJitter.value=v;
-  }
-  if(ui.colorShade){ ui.colorShade.value=randomAreaColor(); }
-  updateShadeThickness();
-  updateShadeOpacity();
-  updateShadeJitter();
-  applyPalette();
-  resetEffects();
-  draw();
-}
-function randomiseAnimationControls(){
-  if(ui.flowCurve){
-    const opts=['easeInOut','easeIn','easeOut','cosine','bounce'];
-    ui.flowCurve.value=opts[Math.floor(Math.random()*opts.length)];
-  }
-  if(ui.wander){
-    const val=(Math.random()*0.8).toFixed(2);
-    ui.wander.value=val;
-    if(ui.wanderLbl) ui.wanderLbl.textContent=`${Math.round(parseFloat(val)*100)}%`;
-  }
-  if(ui.pulse){ ui.pulse.checked=Math.random()>0.5; }
-  if(ui.trail){ ui.trail.checked=Math.random()>0.65; }
-  if(ui.durErase){ ui.durErase.value=Math.round(300+Math.random()*900); }
-  if(ui.durMove){ ui.durMove.value=Math.round(900+Math.random()*1400); }
-  if(ui.durDraw){ ui.durDraw.value=Math.round(900+Math.random()*1600); }
-  updateDurations();
-  resetEffects();
-  gotoShape(mode);
-  draw();
-}
-function randomiseAreaFills(){
-  const available=[];
-  for(let i=0;i<currentOutline.contours.length;i++){
-    const contour=currentOutline.contours[i];
-    if(contour && contour.fillPath) available.push(i);
-  }
-  if(!available.length){
-    if(ui.areaColor) ui.areaColor.value=randomAreaColor();
-    if(areaLayer.preview){ draw(); }
-    return;
-  }
-  if(!areaLayer.fills.length){
-    for(const idx of available){
-      areaLayer.fills.push({
-        id:areaLayer.nextId++,
-        contour:idx,
-        color=randomAreaColor(),
-        opacity=clampOpacity(0.2+Math.random()*0.6)
-      });
-    }
-  } else {
-    for(const fill of areaLayer.fills){
-      fill.color=randomAreaColor();
-      fill.opacity=clampOpacity(0.2+Math.random()*0.6);
-    }
-  }
-  markAreaDirty();
-  renderAreaList();
-  draw();
-}
+function renderList(){ ui.list.innerHTML=''; shapeNames.forEach((n,idx)=>{ const b=document.createElement('span'); b.textContent=(idx+1)+'. '+n; b.className='badge'; b.onclick=()=>gotoShape(idx); ui.list.appendChild(b); }); }
 
 let lastSceneIndex=-1;
 function applyCreativeScene(index){
@@ -1850,50 +1389,41 @@ function inspireScene(){
 }
 
 // Add custom SVG
-if(ui.add){
-  ui.add.onclick=()=>{
-    const raw=ui.svg && typeof ui.svg.value==='string' ? ui.svg.value.trim() : '';
-    if(!raw) return;
-    const name='Custom '+(shapeNames.length+1);
-    presets.push({name, fn:()=>sampleSVG(raw, N)});
-    shapeNames.push(name);
-    setGridFromSVGAligned(raw);
-    if(ui.svg) ui.svg.value='';
-    regenerateShapes(); renderList();
-  };
-}
-if(ui.file){
-  ui.file.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); if(ui.svg) ui.svg.value=txt; });
-}
-if(ui.lockGrid){ ui.lockGrid.onchange=()=>{ if(!ui.lockGrid.checked && ui.gridWarn){ ui.gridWarn.style.display='none'; } resetEffects(); }; }
-if(ui.traceOutline){ ui.traceOutline.onchange=()=>{ resetEffects(); draw(); }; }
-if(ui.shadeFill){ ui.shadeFill.onchange=()=>{ resetEffects(); draw(); }; }
-if(ui.traceMs){ ui.traceMs.onchange=()=>{ resetEffects(); draw(); }; }
-if(ui.shadeMs){ ui.shadeMs.onchange=()=>{ resetEffects(); draw(); }; }
-if(ui.shadeStyle){ ui.shadeStyle.onchange=()=>{ resetEffects(); draw(); }; }
-const updateShadeThickness=()=>{ if(ui.shadeThickness && ui.shadeThicknessLbl){ ui.shadeThicknessLbl.textContent=`${parseFloat(ui.shadeThickness.value||0).toFixed(1)}px`; } };
-const updateShadeOpacity=()=>{ if(ui.shadeOpacity && ui.shadeOpacityLbl){ ui.shadeOpacityLbl.textContent=parseFloat(ui.shadeOpacity.value||0).toFixed(2); } };
-const updateShadeJitter=()=>{ if(ui.shadeJitter && ui.shadeJitterLbl){ ui.shadeJitterLbl.textContent=`${parseFloat(ui.shadeJitter.value||0).toFixed(2)}×`; } };
-if(ui.shadeThickness){ ui.shadeThickness.oninput=()=>{ updateShadeThickness(); draw(); }; ui.shadeThickness.onchange=()=>{ updateShadeThickness(); resetEffects(); draw(); }; }
-if(ui.shadeOpacity){ ui.shadeOpacity.oninput=()=>{ updateShadeOpacity(); draw(); }; ui.shadeOpacity.onchange=()=>{ updateShadeOpacity(); resetEffects(); draw(); }; }
-if(ui.shadeJitter){ ui.shadeJitter.oninput=()=>{ updateShadeJitter(); draw(); }; ui.shadeJitter.onchange=()=>{ updateShadeJitter(); resetEffects(); draw(); }; }
-if(ui.randomiseShade){ ui.randomiseShade.addEventListener('click', randomiseShadingControls); }
-if(ui.randomiseAnim){ ui.randomiseAnim.addEventListener('click', randomiseAnimationControls); }
-const updateAreaOpacityLabel=()=>{ if(ui.areaOpacity && ui.areaOpacityLbl){ ui.areaOpacityLbl.textContent=clampOpacity(ui.areaOpacity.value).toFixed(2); } };
-if(ui.areaOpacity){
-  ui.areaOpacity.addEventListener('input', ()=>{ updateAreaOpacityLabel(); if(areaLayer.preview){ draw(); } });
-  ui.areaOpacity.addEventListener('change', updateAreaOpacityLabel);
-}
-if(ui.areaColor){ ui.areaColor.addEventListener('input', ()=>{ if(areaLayer.preview){ draw(); } }); }
-if(ui.areaRandom){ ui.areaRandom.addEventListener('click', randomiseAreaFills); }
-if(ui.areaClear){ ui.areaClear.addEventListener('click', ()=>{ areaLayer.fills.length=0; markAreaDirty(); renderAreaList(); draw(); }); }
-if(ui.areaMode){
-  ui.areaMode.addEventListener('change', ()=>{
-    if(!ui.areaMode.checked){ clearAreaPreview(); }
-    renderAreaList();
-    draw();
+ui.add.onclick=()=>{
+  const raw=ui.svg.value.trim();
+  if(!raw) return;
+  const name='Custom '+(shapeNames.length+1);
+  presets.push({name, fn:()=>sampleSVG(raw, N)});
+  shapeNames.push(name);
+  // set grid to match this SVG (aligned to current fit/pad/canvas)
+  setGridFromSVGAligned(raw);
+  ui.svg.value='';
+  regenerateShapes(); renderList();
+};
+ui.file.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); ui.svg.value=txt; });
+ui.lockGrid.onchange=()=>{ if(!ui.lockGrid.checked && ui.gridWarn){ ui.gridWarn.style.display='none'; } resetEffects(); };
+ui.traceOutline.onchange=()=>{ resetEffects(); draw(); };
+ui.shadeFill.onchange=()=>{ resetEffects(); draw(); };
+ui.traceMs.onchange=()=>{ resetEffects(); draw(); };
+if(ui.traceDelay){
+  ui.traceDelay.addEventListener('change', ()=>{
+    if(ui.traceOutline && ui.traceOutline.checked){
+      resetEffects();
+      draw();
+    }
   });
 }
+ui.shadeMs.onchange=()=>{ resetEffects(); draw(); };
+ui.shadeStyle.onchange=()=>{ resetEffects(); draw(); };
+const updateShadeThickness=()=>{ if(ui.shadeThicknessLbl){ ui.shadeThicknessLbl.textContent=`${parseFloat(ui.shadeThickness.value||0).toFixed(1)}px`; } };
+const updateShadeOpacity=()=>{ if(ui.shadeOpacityLbl){ ui.shadeOpacityLbl.textContent=parseFloat(ui.shadeOpacity.value||0).toFixed(2); } };
+const updateShadeJitter=()=>{ if(ui.shadeJitterLbl){ ui.shadeJitterLbl.textContent=`${parseFloat(ui.shadeJitter.value||0).toFixed(2)}×`; } };
+ui.shadeThickness.oninput=()=>{ updateShadeThickness(); draw(); };
+ui.shadeThickness.onchange=()=>{ updateShadeThickness(); resetEffects(); draw(); };
+ui.shadeOpacity.oninput=()=>{ updateShadeOpacity(); draw(); };
+ui.shadeOpacity.onchange=()=>{ updateShadeOpacity(); resetEffects(); draw(); };
+ui.shadeJitter.oninput=()=>{ updateShadeJitter(); draw(); };
+ui.shadeJitter.onchange=()=>{ updateShadeJitter(); resetEffects(); draw(); };
 ['colorDots','colorShade','colorGrid','colorBgInner','colorBgOuter','colorGuide'].forEach(key=>{
   if(ui[key]){
     ui[key].addEventListener('input', applyPalette);
@@ -1916,46 +1446,18 @@ if(ui.restorePalette){
 updateShadeThickness();
 updateShadeOpacity();
 updateShadeJitter();
-updateAreaOpacityLabel();
-areaUiReady=true;
-renderAreaList();
 applyPalette();
 
-cv.addEventListener('pointerdown', handleAreaPointerDown);
-cv.addEventListener('pointermove', handleAreaPointerMove);
-cv.addEventListener('pointerup', handleAreaPointerUp);
-cv.addEventListener('pointercancel', handleAreaPointerCancel);
-cv.addEventListener('pointerleave', handleAreaPointerCancel);
-
 // controls
-if(ui.cycle){ ui.cycle.onclick=()=>gotoShape(mode+1); }
-if(ui.pause){ ui.pause.onclick=()=>{ paused=!paused; ui.pause.textContent=paused?'Play':'Pause'; }; }
-if(ui.count){
-  ui.count.oninput=()=>{ if(ui.countLbl) ui.countLbl.textContent=String(getDotCount()); };
-  ui.count.onchange=safeRebuild;
-}
-if(ui.speed){
-  ui.speed.oninput=()=>{
-    speedMul=getSpeedMultiplier();
-    if(ui.speedLbl) ui.speedLbl.textContent=speedMul.toFixed(1)+'×';
-  };
-  speedMul=getSpeedMultiplier();
-  if(ui.speedLbl) ui.speedLbl.textContent=speedMul.toFixed(1)+'×';
-}
-if(ui.size){
-  ui.size.oninput=()=>{ if(ui.sizeLbl) ui.sizeLbl.textContent=getDotSize().toFixed(1); };
-  if(ui.sizeLbl) ui.sizeLbl.textContent=getDotSize().toFixed(1);
-}
-if(ui.durErase){ ui.durErase.onchange=updateDurations; }
-if(ui.durMove){ ui.durMove.onchange=updateDurations; }
-if(ui.durDraw){ ui.durDraw.onchange=updateDurations; }
-if(ui.fit){ ui.fit.onchange=safeRebuild; }
-if(ui.pad){ ui.pad.onchange=safeRebuild; }
-if(ui.useGrid){ ui.useGrid.onchange=safeRebuild; }
-if(ui.showGrid){ ui.showGrid.onchange=()=>{}; }
-if(ui.snapMode){ ui.snapMode.onchange=safeRebuild; }
-if(ui.gridRows){ ui.gridRows.onchange=safeRebuild; }
-if(ui.res){ ui.res.onchange=()=>{ const v=ui.res.value; if(v==='window'){ FIXED=null; } else { const [w,h]=v.split('x').map(Number); FIXED={w,h}; } resize(); safeRebuild(); }; }
+ui.cycle.onclick=()=>gotoShape(mode+1);
+ui.pause.onclick=()=>{paused=!paused; ui.pause.textContent=paused?'Play':'Pause';};
+ui.count.oninput=()=>ui.countLbl.textContent=ui.count.value; ui.count.onchange=safeRebuild;
+ui.speed.oninput=()=>{speedMul=parseFloat(ui.speed.value); ui.speedLbl.textContent=speedMul.toFixed(1)+'×';};
+ui.size.oninput=()=>ui.sizeLbl.textContent=ui.size.value;
+ui.durErase.onchange=updateDurations; ui.durMove.onchange=updateDurations; ui.durDraw.onchange=updateDurations;
+ui.fit.onchange=safeRebuild; ui.pad.onchange=safeRebuild;
+ui.useGrid.onchange=safeRebuild; ui.showGrid.onchange=()=>{}; ui.snapMode.onchange=safeRebuild; ui.gridRows.onchange=safeRebuild;
+ui.res.onchange=()=>{ const v=ui.res.value; if(v==='window'){ FIXED=null; } else { const [w,h]=v.split('x').map(Number); FIXED={w,h}; } resize(); safeRebuild(); };
 if(ui.flowCurve){
   ui.flowCurve.onchange=()=>{
     resetEffects();
@@ -1973,25 +1475,7 @@ if(ui.chalk){ ui.chalk.onchange=()=>{ syncChalkState(true); draw(); }; }
 if(ui.sceneInspire){ ui.sceneInspire.addEventListener('click', inspireScene); }
 
 // recording
-let mediaRecorder=null, recChunks=[];
-if(ui.rec){
-  ui.rec.onclick=()=>{
-    try{
-      const fps=50;
-      const stream=cv.captureStream(fps);
-      mediaRecorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp9'});
-      recChunks=[];
-      mediaRecorder.ondataavailable=e=>{ if(e.data.size>0) recChunks.push(e.data); };
-      mediaRecorder.onstop=()=>{ const blob=new Blob(recChunks,{type:'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; const ts=new Date().toISOString().replace(/[:.]/g,'-'); a.download=`blueprint-morph-${W}x${H}-${fps}fps-${ts}.webm`; a.click(); URL.revokeObjectURL(url); };
-      mediaRecorder.start();
-    }catch(err){
-      alert('Recording not supported: '+err);
-    }
-  };
-}
-if(ui.stopRec){
-  ui.stopRec.onclick=()=>{ if(mediaRecorder&&mediaRecorder.state!=='inactive'){ mediaRecorder.stop(); mediaRecorder=null; } };
-}
+let mediaRecorder=null, recChunks=[]; ui.rec.onclick=()=>{ try{ const fps=50; const stream=cv.captureStream(fps); mediaRecorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp9'}); recChunks=[]; mediaRecorder.ondataavailable=e=>{ if(e.data.size>0) recChunks.push(e.data); }; mediaRecorder.onstop=()=>{ const blob=new Blob(recChunks,{type:'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; const ts=new Date().toISOString().replace(/[:.]/g,'-'); a.download=`blueprint-morph-${W}x${H}-${fps}fps-${ts}.webm`; a.click(); URL.revokeObjectURL(url); }; mediaRecorder.start(); }catch(err){ alert('Recording not supported: '+err); } }; ui.stopRec.onclick=()=>{ if(mediaRecorder&&mediaRecorder.state!=='inactive'){ mediaRecorder.stop(); mediaRecorder=null; } };
 
 // keyboard
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault(); gotoShape(mode+1);} const n=+e.key; if(n>=1&&n<=9) gotoShape(n-1); });
@@ -2009,7 +1493,7 @@ function tick(ts){
     if(trans.active) trans.t += dt;
     const moveDur=Math.max(1, trans.t2-trans.t1);
     const easeFn=currentEase();
-    const wanderStrength=safeFloat(ui.wander, 0);
+    const wanderStrength=parseFloat(ui.wander&&ui.wander.value||0);
     const wanderEnabled=wanderStrength>0.0001;
     const wanderAmp=wanderEnabled?6*wanderStrength*DPR:0;
     const wanderSpeed=wanderEnabled?(0.0006 + wanderStrength*0.0025):0;
@@ -2030,7 +1514,7 @@ function tick(ts){
 }
 
 function drawBg(){
-  const useTrail=safeBool(ui.trail);
+  const useTrail=ui.trail && ui.trail.checked;
   if(!useTrail || !previousTrailState){ ctx.clearRect(0,0,W,H); }
   const g=ctx.createRadialGradient(W*0.6,H*-0.1,Math.min(W,H)*0.1,W*0.5,H*0.5,Math.hypot(W,H)*0.6);
   g.addColorStop(0,palette.bgInner);
@@ -2062,12 +1546,12 @@ function drawBg(){
 }
 
 function drawGridOverlay(){
-  if(!isGridVisible()) return;
+  if(!ui.showGrid.checked) return;
   const hasAnchors=grid.anchorBase.length>0;
   const cols=(grid.cols||[]).filter(Number.isFinite).sort((a,b)=>a-b);
   const mode=hasAnchors?'anchors':(cols.length?'cols':'none');
   if(mode==='none') return;
-  const rowsVal=getGridRowCount();
+  const rowsVal=Math.max(1, parseInt(ui.gridRows.value,10)||1);
   const needsUpdate=!gridOverlayCache.path || gridOverlayCache.width!==W || gridOverlayCache.height!==H || gridOverlayCache.mode!==mode || (mode==='anchors' && gridOverlayCache.anchorVersion!==grid.anchorVersion) || (mode==='cols' && (gridOverlayCache.colsVersion!==grid.colsVersion || gridOverlayCache.rows!==rowsVal));
   if(needsUpdate){
     if(mode==='anchors'){
@@ -2197,20 +1681,20 @@ function renderShadeLayer(targetCtx, params){
 }
 
 function drawShadeOverlay(dotRadius){
-  if(!safeBool(ui.shadeFill) || !currentOutline.fillPaths.length){ shadeCache.cover=-1; return; }
-  const duration=Math.max(100, safeFloat(ui.shadeMs, 1600));
+  if(!ui.shadeFill.checked || !currentOutline.fillPaths.length){ shadeCache.cover=-1; return; }
+  const duration=Math.max(100, parseFloat(ui.shadeMs.value)||1600);
   if(effects.shade.active){
     effects.shade.progress=Math.min(1, effects.shade.progress + (lastDt/duration));
     if(effects.shade.progress>=1){ effects.shade.active=false; }
   }
   const cover=Math.max(0, Math.min(1, effects.shade.progress));
   if(cover<=0){ shadeCache.cover=-1; return; }
-  const style=safeValue(ui.shadeStyle, 'ribbons');
-  const thicknessSlider=safeFloat(ui.shadeThickness, 2.4);
+  const style=(ui.shadeStyle&&ui.shadeStyle.value)||'ribbons';
+  const thicknessSlider=parseFloat(ui.shadeThickness.value)||2.4;
   const thicknessPx=Math.max(0.4, thicknessSlider)*DPR;
-  const jitterRatio=Math.max(0, safeFloat(ui.shadeJitter, 0));
+  const jitterRatio=Math.max(0, parseFloat(ui.shadeJitter.value)||0);
   const jitterAmp=jitterRatio*Math.max(0.6, dotRadius*0.85 + thicknessPx*0.2);
-  const opacity=Math.max(0.02, Math.min(1, safeFloat(ui.shadeOpacity, 0.25)));
+  const opacity=Math.max(0.02, Math.min(1, parseFloat(ui.shadeOpacity.value)||0.25));
   const shadeColor=colorWithAlpha(palette.shade, opacity);
   const shadeGlow=colorWithAlpha(palette.shade, Math.min(1, opacity*0.7));
   const secondaryColor=colorWithAlpha(palette.shade, opacity*0.5);
@@ -2244,8 +1728,17 @@ function drawShadeOverlay(dotRadius){
   }
 }
 function drawTraceOverlay(r){
-  if(!safeBool(ui.traceOutline) || !currentOutline.contours.length) return;
-  const duration=Math.max(100, safeFloat(ui.traceMs, 1400));
+  if(!ui.traceOutline.checked || !currentOutline.contours.length) return;
+  const readyForOutline=!trans.active || trans.t>=trans.t2;
+  if(effects.trace.pending){
+    const gateTime=effects.trace.startAtMs||0;
+    if(readyForOutline && (nowMs||0)>=gateTime){
+      effects.trace.pending=false;
+      effects.trace.active=true;
+      effects.trace.progress=0;
+    }
+  }
+  const duration=Math.max(100, parseFloat(ui.traceMs.value)||1400);
   if(effects.trace.active){
     effects.trace.progress=Math.min(1, effects.trace.progress + (lastDt/duration));
     if(effects.trace.progress>=1) effects.trace.active=false;
@@ -2303,19 +1796,19 @@ function drawTraceOverlay(r){
   ctx.restore();
 }
 
-function draw(){ drawBg(); drawGridOverlay(); const r=getDotSize()*DPR; drawShadeOverlay(r); drawAreaOverlay(); const useChalk=safeBool(ui.chalk);
+function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*DPR; drawShadeOverlay(r); const useChalk=ui.chalk.checked;
   if(useChalk){
     syncChalkState();
     updateChalkState(lastDt||16);
   }
-  if(safeBool(ui.showGuide) && currentOutline.path){
+  if(ui.showGuide.checked && currentOutline.path){
     ctx.save();
     const guideColor=useChalk?colorWithAlpha(palette.dots,0.22):colorWithAlpha(palette.guide,0.18);
     ctx.strokeStyle=guideColor;
     ctx.lineWidth=Math.max(1,r*0.8);
     const dashSpan=6*DPR;
     const dashGap=6*DPR;
-    if(safeBool(ui.drawOn) && trans.active){
+    if(ui.drawOn.checked && trans.active){
       const t=trans.t;
       const rel=Math.min(1, Math.max(0, (t - trans.t2)/Math.max(1,(trans.t3-trans.t2)) ));
       const dashCount=Math.max(1, Math.ceil((currentOutline.totalLength||dots.length||1)/(dashSpan+dashGap)));
@@ -2330,7 +1823,7 @@ function draw(){ drawBg(); drawGridOverlay(); const r=getDotSize()*DPR; drawShad
   }
   const dotColor=palette.dots;
   const dotGlow=colorWithAlpha(palette.dots,0.85);
-  const pulseOn=safeBool(ui.pulse);
+  const pulseOn=ui.pulse && ui.pulse.checked;
   const pulseSpeed=0.0024;
   const time=nowMs||0;
   if(useChalk){
@@ -2347,7 +1840,7 @@ function draw(){ drawBg(); drawGridOverlay(); const r=getDotSize()*DPR; drawShad
     ctx.shadowColor=colorWithAlpha(palette.dots,0.55);
     ctx.shadowBlur=2.4*DPR;
   }
-  let revealFrac=1; if(safeBool(ui.drawOn) && trans.active){ revealFrac=Math.min(1, Math.max(0, (trans.t - trans.t2)/Math.max(1,(trans.t3-trans.t2)) )); }
+  let revealFrac=1; if(ui.drawOn.checked && trans.active){ revealFrac=Math.min(1, Math.max(0, (trans.t - trans.t2)/Math.max(1,(trans.t3-trans.t2)) )); }
   const cutoff=Math.floor(revealFrac*dots.length);
   const chalkPasses=useChalk?(chalkState.passes||3):1;
   const jitterArr=useChalk?chalkState.jitter:null;
@@ -2355,7 +1848,7 @@ function draw(){ drawBg(); drawGridOverlay(); const r=getDotSize()*DPR; drawShad
   const jitterScale=useChalk?(r*0.8):0;
   for(let i=0;i<dots.length;i++){
     const d=dots[i];
-    const visible=(i<cutoff)||!safeBool(ui.drawOn);
+    const visible=(i<cutoff)||!ui.drawOn.checked;
     const pulsePhase=pulseOn?((Math.sin(time*pulseSpeed + (d.pulseOffset||0))+1)/2):0;
     const radiusFactor=pulseOn?(0.75 + pulsePhase*0.45):1;
     const intensity=pulseOn?(0.7 + pulsePhase*0.5):1;
@@ -2376,14 +1869,13 @@ function draw(){ drawBg(); drawGridOverlay(); const r=getDotSize()*DPR; drawShad
     }
   }
   ctx.shadowBlur=0; ctx.globalAlpha=1;
-  drawAreaPreview();
   drawTraceOverlay(r);
   const phase=!trans.active?'idle':(trans.t<trans.t1?'erase':(trans.t<trans.t2?'move':(trans.t<trans.t3?'reveal':'hold')));
-  const gridState = (!isGridEnabled() || !(grid.cols&&grid.cols.length)) ? 'off' : (grid.cols.length===1 ? 'centreline' : getSnapMode());
-  const flowLabel = safeValue(ui.flowCurve, 'ease');
+  const gridState = (!ui.useGrid.checked || !(grid.cols&&grid.cols.length)) ? 'off' : (grid.cols.length===1 ? 'centreline' : ui.snapMode.value);
+  const flowLabel = ui.flowCurve ? ui.flowCurve.value : 'ease';
   const driftPct = Math.round((parseFloat(ui.wander && ui.wander.value || 0))*100);
   const pulseState = pulseOn?'pulse':'still';
-  hud.textContent=`N ${N} • dots ${dots.length} • shape ${mode+1}/${shapes.length} • ${getFitMode()} • grid ${gridState} • flow ${flowLabel} • drift ${driftPct}% • ${pulseState} • phase ${phase}`;
+  hud.textContent=`N ${N} • dots ${dots.length} • shape ${mode+1}/${shapes.length} • ${ui.fit.value} • grid ${gridState} • flow ${flowLabel} • drift ${driftPct}% • ${pulseState} • phase ${phase}`;
   if(trans.active && trans.t>=trans.t3){ trans.active=false; }
 }
 
@@ -2429,9 +1921,9 @@ function selfTests(){
     {name:'sampleSVG accepts circle', fn:()=>sampleSVG('<svg><circle cx="50" cy="50" r="40"/></svg>', 321).length===321},
     {name:'sampleSVG empty svg safe', fn:()=>sampleSVG('<svg></svg>', 222).length===222},
     {name:'fit contain vs stretch count', fn:()=>{ const a=fitPoints([{x:0,y:0,g:0},{x:1,y:1,g:0}],{x:0,y:0,width:1,height:1},100,50,0,500,'contain'); const b=fitPoints([{x:0,y:0,g:0},{x:1,y:1,g:0}],{x:0,y:0,width:1,height:1},100,50,0,500,'stretch'); return a.length===500 && b.length===500; }},
-    {name:'grid snap zero columns safe', fn:()=>{ if(!ui.useGrid) return true; ui.useGrid.checked=true; applyGridFromCSV(''); safeRebuild(); return dots.length===getDotCount(); }},
-    {name:'grid snap one column safe (centreline)', fn:()=>{ if(!ui.useGrid) return true; ui.useGrid.checked=true; applyGridFromCSV('80'); safeRebuild(); return dots.every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)); }},
-    {name:'grid snap invalid CSV robust', fn:()=>{ if(!ui.useGrid) return true; ui.useGrid.checked=true; applyGridFromCSV('80,,notnum, 100'); safeRebuild(); return dots.length===getDotCount(); }},
+    {name:'grid snap zero columns safe', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV(''); safeRebuild(); return dots.length===parseInt(ui.count.value,10); }},
+    {name:'grid snap one column safe (centreline)', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV('80'); safeRebuild(); return dots.every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)); }},
+    {name:'grid snap invalid CSV robust', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV('80,,notnum, 100'); safeRebuild(); return dots.length===parseInt(ui.count.value,10); }},
     {name:'rebuildTargets keeps dots==N', fn:()=>{ const prev=ui.count?ui.count.value:'0'; const target=setCountValue(777); safeRebuild(); const ok=dots.length===target; setCountValue(prev); safeRebuild(); return ok; }}
   ];
   let results=[]; let allPass=false;
@@ -2463,16 +1955,6 @@ function selfTests(){
   return results;
 }
 ui.selfTest.onclick=selfTests;
-window.morphApp={
-  get dots(){ return dots; },
-  get shapes(){ return shapes; },
-  get shapeNames(){ return shapeNames; },
-  get mode(){ return mode; },
-  get palette(){ return palette; },
-  gotoShape:(idx)=>gotoShape(idx),
-  applyPalette:()=>applyPalette(),
-  ui
-};
 </script>
 </body>
 </html>
