@@ -698,6 +698,8 @@ function updateCurrentOutline(points, groups){
   currentOutline.totalLength=structure.totalLength;
   currentOutline.bounds=structure.bounds;
   resetEffects();
+  syncAreaFills();
+  markAreaDirty();
 }
 function previewAnchors(limit=800){
   if(!grid.anchorBase.length) return [];
@@ -1525,14 +1527,12 @@ function renderList(){
 }
 
 areaLayer={
-  areas:[],
+  fills:[],
   nextId:1,
   dirty:true,
   canvas:document.createElement('canvas'),
   ctx:null,
-  preview:null,
-  drawing:false,
-  start:null
+  preview:null
 };
 areaLayer.ctx=areaLayer.canvas.getContext('2d');
 
@@ -1547,21 +1547,29 @@ function ensureAreaCanvas(){
   }
 }
 function markAreaDirty(){ if(!areaLayer) return; areaLayer.dirty=true; }
+function hitTestContour(x,y){
+  if(!currentOutline.contours.length) return null;
+  for(let i=currentOutline.contours.length-1;i>=0;i--){
+    const contour=currentOutline.contours[i];
+    if(!contour || !contour.fillPath) continue;
+    try{
+      if(ctx.isPointInPath(contour.fillPath, x, y)) return i;
+    }catch(err){ }
+  }
+  return null;
+}
 function rebuildAreaOverlay(){
   ensureAreaCanvas();
-  const ctx=areaLayer.ctx;
-  if(!ctx) return;
-  ctx.clearRect(0,0,areaLayer.canvas.width, areaLayer.canvas.height);
-  const baseW=areaLayer.canvas.width;
-  const baseH=areaLayer.canvas.height;
-  for(const area of areaLayer.areas){
-    if(!Number.isFinite(area.nx) || !Number.isFinite(area.ny)) continue;
-    const x=Math.max(0, area.nx*baseW);
-    const y=Math.max(0, area.ny*baseH);
-    const w=Math.max(1, area.nw*baseW);
-    const h=Math.max(1, area.nh*baseH);
-    ctx.fillStyle=colorWithAlpha(area.color || '#ffffff', area.opacity||0.3);
-    ctx.fillRect(x, y, w, h);
+  const aCtx=areaLayer.ctx;
+  if(!aCtx) return;
+  aCtx.clearRect(0,0,areaLayer.canvas.width, areaLayer.canvas.height);
+  for(const fill of areaLayer.fills){
+    const contour=currentOutline.contours[fill.contour];
+    if(!contour || !contour.fillPath) continue;
+    aCtx.save();
+    aCtx.fillStyle=colorWithAlpha(fill.color || '#ffffff', fill.opacity||0.3);
+    aCtx.fill(contour.fillPath);
+    aCtx.restore();
   }
   areaLayer.dirty=false;
 }
@@ -1574,40 +1582,53 @@ function pointerToCanvas(e){
     y: (e.clientY-rect.top)*scaleY
   };
 }
-function describeArea(area){
-  const w=Math.round(area.nw*(W||cv.width||0));
-  const h=Math.round(area.nh*(H||cv.height||0));
-  return `${w}×${h}`;
+function describeArea(fill){
+  const contour=currentOutline.contours[fill.contour];
+  if(contour && contour.bounds){
+    const w=Math.round(contour.bounds.width||0);
+    const h=Math.round(contour.bounds.height||0);
+    if(Number.isFinite(w) && Number.isFinite(h)){
+      return `Region ${fill.contour+1} (${w}×${h})`;
+    }
+  }
+  return `Region ${fill.contour+1}`;
 }
 function renderAreaList(){
   if(!ui.areaList) return;
   ui.areaList.innerHTML='';
-  if(!areaLayer.areas.length){
+  if(!areaLayer.fills.length){
     const empty=document.createElement('div');
     empty.className='tiny';
-    empty.textContent=ui.areaMode && ui.areaMode.checked ? 'Drag on the canvas to add fills.' : 'Enable area selection to add fills.';
+    const hasRegions=currentOutline.contours.some(c=>c && c.fillPath);
+    if(!hasRegions){
+      empty.textContent='Current shape has no closed regions to fill.';
+    }else if(ui.areaMode && ui.areaMode.checked){
+      empty.textContent='Click inside a closed shape to add a fill.';
+    }else{
+      empty.textContent='Enable area selection then click inside a region to add fills.';
+    }
     ui.areaList.appendChild(empty);
     return;
   }
-  for(const area of areaLayer.areas){
+  for(const fill of areaLayer.fills){
     const row=document.createElement('div');
     row.className='area-entry';
     const chip=document.createElement('div');
     chip.className='area-chip';
     const swatch=document.createElement('span');
     swatch.className='area-swatch';
-    swatch.style.background=area.color;
-    swatch.style.opacity=Math.max(0.05, Math.min(1, area.opacity));
+    swatch.style.background=fill.color;
+    swatch.style.opacity=Math.max(0.05, Math.min(1, fill.opacity));
     chip.appendChild(swatch);
     const label=document.createElement('span');
-    label.textContent=`${describeArea(area)} • ${Math.round((area.opacity||0)*100)}%`;
+    label.textContent=`${describeArea(fill)} • ${Math.round((fill.opacity||0)*100)}%`;
     chip.appendChild(label);
     row.appendChild(chip);
     const btn=document.createElement('button');
     btn.className='secondary';
     btn.textContent='Remove';
     btn.onclick=()=>{
-      areaLayer.areas=areaLayer.areas.filter(a=>a.id!==area.id);
+      areaLayer.fills=areaLayer.fills.filter(a=>a.id!==fill.id);
       markAreaDirty();
       renderAreaList();
       draw();
@@ -1622,82 +1643,91 @@ function clampOpacity(v){
   if(!Number.isFinite(num)) return 0.35;
   return Math.max(0.05, Math.min(0.9, num));
 }
-function commitArea(rect){
-  if(!rect) return;
-  const color=ui.areaColor?ui.areaColor.value:'#3bd6ff';
-  const opacity=clampOpacity(ui.areaOpacity?ui.areaOpacity.value:0.35);
-  const baseW=Math.max(1, W||cv.width||1);
-  const baseH=Math.max(1, H||cv.height||1);
-  const clampedX=Math.max(0, Math.min(baseW, rect.x));
-  const clampedY=Math.max(0, Math.min(baseH, rect.y));
-  const clampedW=Math.max(0, Math.min(baseW-clampedX, rect.w));
-  const clampedH=Math.max(0, Math.min(baseH-clampedY, rect.h));
-  if(clampedW<6 || clampedH<6) return;
-  areaLayer.areas.push({
-    id:areaLayer.nextId++,
-    nx:Math.max(0, Math.min(1, clampedX/baseW)),
-    ny:Math.max(0, Math.min(1, clampedY/baseH)),
-    nw:Math.max(0, Math.min(1, clampedW/baseW)),
-    nh:Math.max(0, Math.min(1, clampedH/baseH)),
-    color,
-    opacity
-  });
+function syncAreaFills(){
+  if(!areaLayer) return;
+  const valid=new Set();
+  for(let i=0;i<currentOutline.contours.length;i++){
+    const contour=currentOutline.contours[i];
+    if(contour && contour.fillPath) valid.add(i);
+  }
+  const before=areaLayer.fills.length;
+  areaLayer.fills=areaLayer.fills.filter(fill=>valid.has(fill.contour));
+  if(areaLayer.preview && !valid.has(areaLayer.preview.contour)){
+    areaLayer.preview=null;
+  }
+  if(before!==areaLayer.fills.length){
+    markAreaDirty();
+  }
+  if(areaUiReady) renderAreaList();
+}
+function applyFillToContour(contourIndex, opts={}){
+  if(contourIndex==null || contourIndex<0) return;
+  const contour=currentOutline.contours[contourIndex];
+  if(!contour || !contour.fillPath) return;
+  const color=opts.color ?? (ui.areaColor?ui.areaColor.value:'#3bd6ff');
+  const opacity=clampOpacity(opts.opacity ?? (ui.areaOpacity?ui.areaOpacity.value:0.35));
+  const existing=areaLayer.fills.find(f=>f.contour===contourIndex);
+  if(existing){
+    existing.color=color;
+    existing.opacity=opacity;
+  } else {
+    areaLayer.fills.push({id:areaLayer.nextId++, contour:contourIndex, color, opacity});
+  }
   markAreaDirty();
   renderAreaList();
 }
-function clearAreaPreview(){ areaLayer.preview=null; }
+function setAreaPreview(index){
+  if(index==null || index<0){
+    if(areaLayer.preview){ areaLayer.preview=null; }
+    return;
+  }
+  const contour=currentOutline.contours[index];
+  if(!contour || !contour.fillPath){ areaLayer.preview=null; return; }
+  areaLayer.preview={contour:index};
+}
+function clearAreaPreview(){
+  if(!areaLayer.preview) return;
+  areaLayer.preview=null;
+}
 function handleAreaPointerDown(e){
   if(!ui.areaMode || !ui.areaMode.checked) return;
   if(e.button!==0 && e.pointerType!=='touch' && e.pointerType!=='pen') return;
   e.preventDefault();
-  const baseW=Math.max(1, W||cv.width||1);
-  const baseH=Math.max(1, H||cv.height||1);
   const pos=pointerToCanvas(e);
-  const startX=Math.max(0, Math.min(baseW, pos.x));
-  const startY=Math.max(0, Math.min(baseH, pos.y));
-  areaLayer.drawing=true;
-  areaLayer.start={x:startX,y:startY};
-  areaLayer.preview={x:startX,y:startY,w:0,h:0};
-  if(cv.setPointerCapture){ try{ cv.setPointerCapture(e.pointerId); }catch(err){} }
+  const hit=hitTestContour(pos.x,pos.y);
+  setAreaPreview(hit);
+  draw();
 }
 function handleAreaPointerMove(e){
-  if(!areaLayer.drawing) return;
-  e.preventDefault();
-  const baseW=Math.max(1, W||cv.width||1);
-  const baseH=Math.max(1, H||cv.height||1);
+  if(!ui.areaMode || !ui.areaMode.checked){
+    if(areaLayer.preview){ clearAreaPreview(); draw(); }
+    return;
+  }
   const pos=pointerToCanvas(e);
-  const curX=Math.max(0, Math.min(baseW, pos.x));
-  const curY=Math.max(0, Math.min(baseH, pos.y));
-  const startX=Math.max(0, Math.min(baseW, areaLayer.start.x));
-  const startY=Math.max(0, Math.min(baseH, areaLayer.start.y));
-  const x=Math.min(curX, startX);
-  const y=Math.min(curY, startY);
-  const w=Math.abs(curX-startX);
-  const h=Math.abs(curY-startY);
-  areaLayer.preview={x,y,w,h};
-  draw();
+  const hit=hitTestContour(pos.x,pos.y);
+  const prev=areaLayer.preview?areaLayer.preview.contour:null;
+  if(hit!==prev){
+    setAreaPreview(hit);
+    draw();
+  }
 }
 function handleAreaPointerUp(e){
-  if(!areaLayer.drawing) return;
+  if(!ui.areaMode || !ui.areaMode.checked) return;
   e.preventDefault();
-  if(cv.releasePointerCapture){ try{ cv.releasePointerCapture(e.pointerId); }catch(err){} }
-  const rect=areaLayer.preview;
-  areaLayer.drawing=false;
-  areaLayer.start=null;
-  clearAreaPreview();
-  commitArea(rect);
-  draw();
+  const pos=pointerToCanvas(e);
+  const hit=hitTestContour(pos.x,pos.y);
+  if(hit!=null){
+    applyFillToContour(hit);
+    draw();
+  }
 }
-function handleAreaPointerCancel(e){
-  if(!areaLayer.drawing) return;
-  if(cv.releasePointerCapture){ try{ cv.releasePointerCapture(e.pointerId); }catch(err){} }
-  areaLayer.drawing=false;
-  areaLayer.start=null;
+function handleAreaPointerCancel(){
+  if(!areaLayer.preview) return;
   clearAreaPreview();
   draw();
 }
 function drawAreaOverlay(){
-  if(!areaLayer.areas.length) return;
+  if(!areaLayer.fills.length) return;
   ensureAreaCanvas();
   if(areaLayer.dirty) rebuildAreaOverlay();
   if(!areaLayer.canvas.width || !areaLayer.canvas.height) return;
@@ -1708,14 +1738,15 @@ function drawAreaOverlay(){
 }
 function drawAreaPreview(){
   if(!areaLayer.preview) return;
-  const rect=areaLayer.preview;
+  const contour=currentOutline.contours[areaLayer.preview.contour];
+  if(!contour || !contour.fillPath) return;
   ctx.save();
   ctx.strokeStyle=colorWithAlpha(ui.areaColor?ui.areaColor.value:'#3bd6ff',0.9);
-  ctx.fillStyle=colorWithAlpha(ui.areaColor?ui.areaColor.value:'#3bd6ff',0.15);
-  ctx.lineWidth=1.2*DPR;
+  ctx.fillStyle=colorWithAlpha(ui.areaColor?ui.areaColor.value:'#3bd6ff',0.18);
+  ctx.lineWidth=1.4*DPR;
   ctx.setLineDash([6*DPR,4*DPR]);
-  ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.stroke(contour.fillPath);
+  ctx.fill(contour.fillPath);
   ctx.restore();
 }
 function randomAreaColor(){
@@ -1767,14 +1798,30 @@ function randomiseAnimationControls(){
   draw();
 }
 function randomiseAreaFills(){
-  if(!areaLayer.areas.length){
+  const available=[];
+  for(let i=0;i<currentOutline.contours.length;i++){
+    const contour=currentOutline.contours[i];
+    if(contour && contour.fillPath) available.push(i);
+  }
+  if(!available.length){
     if(ui.areaColor) ui.areaColor.value=randomAreaColor();
     if(areaLayer.preview){ draw(); }
     return;
   }
-  for(const area of areaLayer.areas){
-    area.color=randomAreaColor();
-    area.opacity=clampOpacity(0.2+Math.random()*0.6);
+  if(!areaLayer.fills.length){
+    for(const idx of available){
+      areaLayer.fills.push({
+        id:areaLayer.nextId++,
+        contour:idx,
+        color=randomAreaColor(),
+        opacity=clampOpacity(0.2+Math.random()*0.6)
+      });
+    }
+  } else {
+    for(const fill of areaLayer.fills){
+      fill.color=randomAreaColor();
+      fill.opacity=clampOpacity(0.2+Math.random()*0.6);
+    }
   }
   markAreaDirty();
   renderAreaList();
@@ -1839,10 +1886,10 @@ if(ui.areaOpacity){
 }
 if(ui.areaColor){ ui.areaColor.addEventListener('input', ()=>{ if(areaLayer.preview){ draw(); } }); }
 if(ui.areaRandom){ ui.areaRandom.addEventListener('click', randomiseAreaFills); }
-if(ui.areaClear){ ui.areaClear.addEventListener('click', ()=>{ areaLayer.areas.length=0; markAreaDirty(); renderAreaList(); draw(); }); }
+if(ui.areaClear){ ui.areaClear.addEventListener('click', ()=>{ areaLayer.fills.length=0; markAreaDirty(); renderAreaList(); draw(); }); }
 if(ui.areaMode){
   ui.areaMode.addEventListener('change', ()=>{
-    if(!ui.areaMode.checked && areaLayer.drawing){ areaLayer.drawing=false; areaLayer.start=null; clearAreaPreview(); }
+    if(!ui.areaMode.checked){ clearAreaPreview(); }
     renderAreaList();
     draw();
   });
