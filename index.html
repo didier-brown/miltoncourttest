@@ -263,6 +263,8 @@ let paint={
   raw:null
 };
 
+let ui=null;
+
 function disposePaint(){
   if(paint.url){ URL.revokeObjectURL(paint.url); }
   paint.img=null;
@@ -279,11 +281,11 @@ function resize(){
   else { const b=cv.getBoundingClientRect(); W=Math.round(b.width*DPR); H=Math.round(b.height*DPR); }
   cv.width=W; cv.height=H;
   invalidateOverlay();
-  rebuildPaintIfPossible();
+  if(ui){ rebuildPaintIfPossible(); }
 }
 resize(); addEventListener('resize', ()=>{ if(!FIXED) { resize(); safeRebuild(); }});
 
-const ui={
+ui={
   count:dotCount,countLbl:dotCountLbl,speed,speedLbl,size,sizeLbl,
   svg:svgInput,add:addFromSVG,file:document.getElementById('file'),
   list:shapeList,cycle, pause, selfTest, chalk:document.getElementById('chalk'),
