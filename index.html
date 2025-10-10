@@ -249,6 +249,30 @@ let W=0,H=0,DPR=1, FIXED=null;
 const gridOverlayCache={path:null, width:0, height:0, mode:'none', anchorVersion:-1, colsVersion:-1, rows:-1};
 const shadeCache={canvas:null, ctx:null, width:0, height:0, cover:-1, style:'', thickness:0, jitter:0, opacity:0, seed:0, color:''};
 const chalkState={count:0, passes:3, jitter:null, radius:null, updateCursor:0};
+
+// ======== SVG Paint Layer (colour-preserving) ========
+let paint={
+  img:null,
+  url:null,
+  alpha:0,
+  targetAlpha:0,
+  t:0,
+  revealMs:1200,
+  hasContent:false,
+  pendingInit:false,
+  raw:null
+};
+
+function disposePaint(){
+  if(paint.url){ URL.revokeObjectURL(paint.url); }
+  paint.img=null;
+  paint.url=null;
+  paint.hasContent=false;
+  paint.alpha=0;
+  paint.targetAlpha=0;
+  paint.t=0;
+}
+
 function resize(){
   DPR=window.devicePixelRatio||1;
   if(FIXED){ W=FIXED.w; H=FIXED.h; }
@@ -1137,28 +1161,6 @@ updateDurations();
 // Grid state
 let grid={cols:[], rows:4, anchorBase:[], anchorLookup:null, anchorSegments:[], anchorTotalLen:0, anchorVersion:0, colsVersion:0};
 
-// ======== SVG Paint Layer (colour-preserving) ========
-let paint={
-  img:null,
-  url:null,
-  alpha:0,
-  targetAlpha:0,
-  t:0,
-  revealMs:1200,
-  hasContent:false,
-  pendingInit:false,
-  raw:null
-};
-
-function disposePaint(){
-  if(paint.url){ URL.revokeObjectURL(paint.url); }
-  paint.img=null;
-  paint.url=null;
-  paint.hasContent=false;
-  paint.alpha=0;
-  paint.targetAlpha=0;
-  paint.t=0;
-}
 const effects={
   trace:{active:false,progress:1,seed:0,startAtMs:0,pending:false},
   shade:{active:false,progress:1,seed:0}
