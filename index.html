@@ -121,6 +121,7 @@
     </div>
     <div class="row">
       <span class="tiny">Trace ms</span><input id="traceMs" type="number" value="1400" min="100" max="60000" step="100" style="width:90px">
+      <span class="tiny">Trace delay</span><input id="traceDelay" type="number" value="0" min="0" max="60000" step="100" style="width:90px">
       <span class="tiny">Shade ms</span><input id="shadeMs" type="number" value="1600" min="100" max="60000" step="100" style="width:90px">
     </div>
 
@@ -134,6 +135,10 @@
       <label class="tiny">BG inner</label><input id="colorBgInner" type="color" value="#123c2f">
       <label class="tiny">BG outer</label><input id="colorBgOuter" type="color" value="#0f2f24">
       <label class="tiny">Guide</label><input id="colorGuide" type="color" value="#7fe0ff">
+    </div>
+    <div class="row">
+      <button id="shufflePalette" class="secondary">Shuffle palette</button>
+      <button id="restorePalette" class="secondary">Reset colours</button>
     </div>
     <div class="row">
       <label class="tiny">Shade style</label>
@@ -169,6 +174,29 @@
       <span class="tiny">Reveal ms</span><input id="durDraw" type="number" min="0" value="1400" style="width:80px">
     </div>
 
+    <h2>Creative dynamics</h2>
+    <div class="row">
+      <label class="tiny">Flow curve</label>
+      <select id="flowCurve">
+        <option value="easeInOut" selected>Ease in-out</option>
+        <option value="easeIn">Ease in</option>
+        <option value="easeOut">Ease out</option>
+        <option value="cosine">Cosine drift</option>
+        <option value="bounce">Soft bounce</option>
+      </select>
+      <label class="tiny">Drift</label>
+      <input id="wander" type="range" min="0" max="1" step="0.05" value="0">
+      <span class="tiny" id="wanderLbl">0%</span>
+    </div>
+    <div class="row toggle">
+      <input type="checkbox" id="pulse"><label for="pulse" class="tiny">Pulse brightness</label>
+      <input type="checkbox" id="trail"><label for="trail" class="tiny">Persistent trails</label>
+    </div>
+    <div class="row">
+      <button id="sceneInspire">Inspire scene</button>
+      <span class="tiny" id="sceneLabel">—</span>
+    </div>
+
     <h2>Presets</h2>
     <div class="row">
       <button id="cycle">Cycle ▶</button>
@@ -185,6 +213,7 @@
         <option value="window" selected>Preview (window)</option>
         <option value="2505x1080">2505 × 1080</option>
         <option value="2505x1400">2505 × 1400</option>
+        <option value="2560x1920">2560 × 1920</option>
         <option value="1440x1080">1440 × 1080</option>
       </select>
       <button id="rec">Record WebM</button>
@@ -201,6 +230,8 @@ const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
 const hud=document.getElementById('hud');
 let W=0,H=0,DPR=1, FIXED=null;
 const gridOverlayCache={path:null, width:0, height:0, mode:'none', anchorVersion:-1, colsVersion:-1, rows:-1};
+const shadeCache={canvas:null, ctx:null, width:0, height:0, cover:-1, style:'', thickness:0, jitter:0, opacity:0, seed:0, color:''};
+const chalkState={count:0, passes:3, jitter:null, radius:null, updateCursor:0};
 function resize(){
   DPR=window.devicePixelRatio||1;
   if(FIXED){ W=FIXED.w; H=FIXED.h; }
@@ -220,13 +251,15 @@ const ui={
   gridRows, gridCols, gridFile, applyGrid, clearGrid,
   gridFromInput:document.getElementById('gridFromInput'),
   gridFromShape:document.getElementById('gridFromShape'),
-  lockGrid, traceOutline, shadeFill, traceMs, shadeMs,
+  lockGrid, traceOutline, shadeFill, traceMs, traceDelay:document.getElementById('traceDelay'), shadeMs,
   colorDots:document.getElementById('colorDots'),
   colorShade:document.getElementById('colorShade'),
   colorGrid:document.getElementById('colorGrid'),
   colorBgInner:document.getElementById('colorBgInner'),
   colorBgOuter:document.getElementById('colorBgOuter'),
   colorGuide:document.getElementById('colorGuide'),
+  shufflePalette:document.getElementById('shufflePalette'),
+  restorePalette:document.getElementById('restorePalette'),
   shadeStyle:document.getElementById('shadeStyle'),
   shadeThickness:document.getElementById('shadeThickness'),
   shadeThicknessLbl:document.getElementById('shadeThicknessLbl'),
@@ -234,11 +267,34 @@ const ui={
   shadeOpacityLbl:document.getElementById('shadeOpacityLbl'),
   shadeJitter:document.getElementById('shadeJitter'),
   shadeJitterLbl:document.getElementById('shadeJitterLbl'),
+  flowCurve:document.getElementById('flowCurve'),
+  wander:document.getElementById('wander'),
+  wanderLbl:document.getElementById('wanderLbl'),
+  pulse:document.getElementById('pulse'),
+  trail:document.getElementById('trail'),
+  sceneInspire:document.getElementById('sceneInspire'),
+  sceneLabel:document.getElementById('sceneLabel'),
   stagger, lag, gridWarn: document.getElementById('gridWarn')
 };
-const ease=t=>t<.5?2*t*t:1-(((-2*t+2)**2)/2);
+const eases={
+  easeInOut:t=>t<0.5?2*t*t:1-(((-2*t+2)**2)/2),
+  easeIn:t=>t*t,
+  easeOut:t=>1-Math.pow(1-t,2),
+  cosine:t=>0.5-(Math.cos(Math.PI*t)/2),
+  bounce:t=>{
+    const n1=7.5625, d1=2.75;
+    if(t<1/d1){return n1*t*t;}
+    if(t<2/d1){t-=1.5/d1; return n1*t*t+0.75;}
+    if(t<2.5/d1){t-=2.25/d1; return n1*t*t+0.9375;}
+    t-=2.625/d1; return n1*t*t+0.984375;
+  }
+};
+function currentEase(){
+  const key=ui.flowCurve?ui.flowCurve.value:'easeInOut';
+  return eases[key]||eases.easeInOut;
+}
 
-const palette={
+const defaultPalette={
   dots:'#f4f3ee',
   shade:'#f4f3ee',
   grid:'#d8efe3',
@@ -246,6 +302,7 @@ const palette={
   bgOuter:'#0f2f24',
   guide:'#7fe0ff'
 };
+const palette={...defaultPalette};
 
 function hexToRgb(hex){
   if(!hex) return {r:244,g:243,b:238};
@@ -259,6 +316,48 @@ function colorWithAlpha(hex, alpha){
   const {r,g,b}=hexToRgb(hex);
   const a=Math.max(0, Math.min(1, alpha));
   return `rgba(${r},${g},${b},${a})`;
+}
+function hslToHex(h, s, l){
+  h=((h%360)+360)%360;
+  s=Math.max(0,Math.min(1,s));
+  l=Math.max(0,Math.min(1,l));
+  const c=(1-Math.abs(2*l-1))*s;
+  const x=c*(1-Math.abs(((h/60)%2)-1));
+  const m=l-c/2;
+  let r=0,g=0,b=0;
+  if(h<60){r=c;g=x;b=0;}
+  else if(h<120){r=x;g=c;b=0;}
+  else if(h<180){r=0;g=c;b=x;}
+  else if(h<240){r=0;g=x;b=c;}
+  else if(h<300){r=x;g=0;b=c;}
+  else {r=c;g=0;b=x;}
+  const toHex=v=>{
+    const int=Math.round((v+m)*255);
+    return int.toString(16).padStart(2,'0');
+  };
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+function generatePalette(){
+  const base=Math.random()*360;
+  const accent=base+30+Math.random()*50;
+  const bgHue=base+200;
+  return {
+    dots:hslToHex(accent,0.42+Math.random()*0.18,0.80),
+    shade:hslToHex(accent+8,0.48,0.76),
+    grid:hslToHex(base-10,0.28,0.78),
+    bgInner:hslToHex(bgHue,0.48,0.20),
+    bgOuter:hslToHex(bgHue,0.52,0.12),
+    guide:hslToHex(base+160,0.58,0.64)
+  };
+}
+function updateColorInputs(values){
+  if(!values) return;
+  if(ui.colorDots && values.dots) ui.colorDots.value=values.dots;
+  if(ui.colorShade && values.shade) ui.colorShade.value=values.shade;
+  if(ui.colorGrid && values.grid) ui.colorGrid.value=values.grid;
+  if(ui.colorBgInner && values.bgInner) ui.colorBgInner.value=values.bgInner;
+  if(ui.colorBgOuter && values.bgOuter) ui.colorBgOuter.value=values.bgOuter;
+  if(ui.colorGuide && values.guide) ui.colorGuide.value=values.guide;
 }
 function applyPalette(){
   if(ui.colorDots) palette.dots=ui.colorDots.value||palette.dots;
@@ -374,12 +473,18 @@ function smoothAnchors(anchors){
 }
 function resetEffects(){
   if(ui.traceOutline && ui.traceOutline.checked && (currentOutline.totalLength||0)>0){
-    effects.trace.active=true;
+    const delayVal=ui.traceDelay?parseFloat(ui.traceDelay.value):0;
+    const delayMs=Math.max(0, Number.isFinite(delayVal)?delayVal:0);
+    effects.trace.active=false;
     effects.trace.progress=0;
     effects.trace.seed=Math.random()*1000;
+    effects.trace.pending=true;
+    effects.trace.startAtMs=(nowMs||0)+delayMs;
   } else {
     effects.trace.active=false;
     effects.trace.progress=1;
+    effects.trace.pending=false;
+    effects.trace.startAtMs=0;
   }
   if(ui.shadeFill && ui.shadeFill.checked && currentOutline.fillPaths.length){
     effects.shade.active=true;
@@ -654,6 +759,13 @@ function ensureLength(arr,N){
   for(let i=0;i<N;i++){ const t=i/(N-1||1); const idx=Math.round(t*L); const p=arr[Math.min(arr.length-1, idx)]||{x:Math.random()*W,y:Math.random()*H,g:0}; out.push({x:p.x,y:p.y,g:p.g||0}); }
   return out;
 }
+function enrichDot(d){
+  if(!d) return d;
+  if(!Number.isFinite(d.wanderSeed)) d.wanderSeed=Math.random()*Math.PI*2;
+  if(!Number.isFinite(d.wanderPhase)) d.wanderPhase=Math.random()*Math.PI*2;
+  if(!Number.isFinite(d.pulseOffset)) d.pulseOffset=Math.random()*Math.PI*2;
+  return d;
+}
 function finite(v){ return Number.isFinite(v) && Math.abs(v) < 1e9; }
 function sanitizePoints(pts){ return pts.map(p=>({x: finite(p.x)?p.x: (Math.random()*W), y: finite(p.y)?p.y: (Math.random()*H), g: p.g||0})); }
 function resamplePolyline(points, N, closed=true){
@@ -720,12 +832,170 @@ const presets=[
   {name:'Rectangle', fn:()=>rectOutline(N, Math.min(W*0.6, H*0.8), Math.min(W*0.35, H*0.5))},
   {name:'Tube Roundel', fn:()=>sampleSVG('<svg><circle cx="200" cy="150" r="130"/><rect x="0" y="140" width="400" height="20"/></svg>', N)},
   {name:'Crown', fn:()=>sampleSVG('M20,210 L70,90 L110,150 L160,70 L210,150 L260,90 L310,210 L20,210 Z M20,210 H310', N)},
-  {name:'Bridge (simplified)', fn:()=>sampleSVG('<svg><line x1="20" y1="210" x2="380" y2="210"/><line x1="60" y1="210" x2="60" y2="140"/><line x1="340" y1="210" x2="340" y2="140"/><path d="M60,140 C120,110 280,110 340,140"/></svg>', N)}
+  {name:'Bridge (simplified)', fn:()=>sampleSVG('<svg><line x1="20" y1="210" x2="380" y2="210"/><line x1="60" y1="210" x2="60" y2="140"/><line x1="340" y1="210" x2="340" y2="140"/><path d="M60,140 C120,110 280,110 340,140"/></svg>', N)},
+  {name:'Shard Silhouette', fn:()=>sampleSVG('<svg><path d="M200 20 L238 360 L214 360 L200 280 L186 360 L162 360 Z"/></svg>', N)},
+  {name:'Gherkin Layers', fn:()=>sampleSVG('<svg><path d="M200 40 C264 40 304 140 304 220 C304 320 264 360 200 360 C136 360 96 320 96 220 C96 140 136 40 200 40 Z"/><path d="M128 140 C168 176 232 176 272 140"/><path d="M128 220 C168 256 232 256 272 220"/><path d="M128 300 C168 332 232 332 272 300"/><path d="M200 40 L200 360"/></svg>', N)},
+  {name:'London Eye', fn:()=>sampleSVG('<svg><circle cx="200" cy="200" r="150"/><circle cx="200" cy="200" r="36"/><line x1="200" y1="50" x2="200" y2="350"/><line x1="50" y1="200" x2="350" y2="200"/><line x1="90" y1="90" x2="310" y2="310"/><line x1="310" y1="90" x2="90" y2="310"/><circle cx="200" cy="50" r="12"/><circle cx="200" cy="350" r="12"/><circle cx="50" cy="200" r="12"/><circle cx="350" cy="200" r="12"/><circle cx="86" cy="112" r="10"/><circle cx="112" cy="86" r="10"/><circle cx="288" cy="86" r="10"/><circle cx="314" cy="112" r="10"/><circle cx="86" cy="288" r="10"/><circle cx="112" cy="314" r="10"/><circle cx="288" cy="314" r="10"/><circle cx="314" cy="288" r="10"/></svg>', N)},
+  {name:'Tower Bridge Span', fn:()=>sampleSVG('<svg><rect x="80" y="170" width="40" height="150"/><rect x="280" y="170" width="40" height="150"/><path d="M120 170 L140 120 L160 170"/><path d="M280 170 L300 120 L320 170"/><path d="M120 210 H280"/><path d="M120 260 H280"/><line x1="120" y1="320" x2="280" y2="320"/><line x1="200" y1="210" x2="200" y2="320"/></svg>', N)},
+  {name:'Millennium Dome', fn:()=>sampleSVG('<svg><ellipse cx="200" cy="250" rx="170" ry="70"/><path d="M60 250 Q200 180 340 250"/><line x1="80" y1="170" x2="80" y2="250"/><line x1="120" y1="160" x2="120" y2="250"/><line x1="160" y1="150" x2="160" y2="250"/><line x1="200" y1="140" x2="200" y2="250"/><line x1="240" y1="150" x2="240" y2="250"/><line x1="280" y1="160" x2="280" y2="250"/><line x1="320" y1="170" x2="320" y2="250"/></svg>', N)},
+  {name:'Thames Meander', fn:()=>sampleSVG('<svg><path d="M40 260 C90 220 150 280 210 240 C250 214 280 220 310 240 C350 266 370 250 360 200 C348 148 288 132 240 162 C196 188 156 184 120 160 C80 132 60 120 40 120"/></svg>', N)},
+  {name:'Barbican Towers', fn:()=>sampleSVG('<svg><rect x="80" y="140" width="48" height="200"/><rect x="164" y="100" width="48" height="240"/><rect x="248" y="160" width="48" height="180"/><path d="M60 340 H320"/></svg>', N)},
+  {name:'Canary Wharf Skyline', fn:()=>sampleSVG('<svg><rect x="60" y="220" width="50" height="140"/><rect x="130" y="180" width="60" height="180"/><path d="M160 140 L190 180 H130 Z"/><rect x="210" y="200" width="50" height="160"/><rect x="270" y="240" width="60" height="120"/><path d="M40 360 H360"/></svg>', N)},
+  {name:'Battersea Power', fn:()=>sampleSVG('<svg><rect x="120" y="210" width="160" height="110"/><rect x="100" y="140" width="30" height="180"/><rect x="270" y="140" width="30" height="180"/><rect x="150" y="180" width="40" height="140"/><rect x="210" y="180" width="40" height="140"/><path d="M100 320 H300"/></svg>', N)},
+  {name:'St Paul\'s Dome', fn:()=>sampleSVG('<svg><path d="M200 60 C154 60 140 112 140 150 C140 210 120 230 120 270 C120 330 160 360 200 360 C240 360 280 330 280 270 C280 230 260 210 260 150 C260 112 246 60 200 60 Z"/><path d="M200 40 L200 12"/><path d="M150 150 H250"/><path d="M140 230 H260"/></svg>', N)}
+];
+
+const creativeScenes=[
+  {
+    name:'Milton dusk',
+    setup(){
+      updateColorInputs(defaultPalette);
+      if(ui.chalk) ui.chalk.checked=true;
+      if(ui.drawOn) ui.drawOn.checked=true;
+      if(ui.traceOutline) ui.traceOutline.checked=true;
+      if(ui.shadeFill) ui.shadeFill.checked=true;
+      if(ui.snapMode) ui.snapMode.value='shape';
+      if(ui.useGrid) ui.useGrid.checked=true;
+      if(ui.flowCurve) ui.flowCurve.value='easeInOut';
+      if(ui.wander){ ui.wander.value='0.25'; if(ui.wanderLbl) ui.wanderLbl.textContent='25%'; }
+      if(ui.pulse) ui.pulse.checked=false;
+      if(ui.trail) ui.trail.checked=false;
+      if(ui.shadeStyle) ui.shadeStyle.value='ribbons';
+      if(ui.shadeThickness) ui.shadeThickness.value='2.4';
+      if(ui.shadeOpacity) ui.shadeOpacity.value='0.25';
+      if(ui.shadeJitter) ui.shadeJitter.value='0.6';
+      if(ui.snapAmt){
+        ui.snapAmt.value='0.6';
+        if(ui.snapAmtLbl) ui.snapAmtLbl.textContent='0.60';
+      }
+    }
+  },
+  {
+    name:'Neon pulse',
+    setup(){
+      updateColorInputs({
+        dots:'#f3fffd',
+        shade:'#80fff4',
+        grid:'#6ef8ff',
+        bgInner:'#041428',
+        bgOuter:'#010914',
+        guide:'#62ffe2'
+      });
+      if(ui.chalk) ui.chalk.checked=false;
+      if(ui.drawOn) ui.drawOn.checked=true;
+      if(ui.traceOutline) ui.traceOutline.checked=false;
+      if(ui.shadeFill) ui.shadeFill.checked=true;
+      if(ui.snapMode) ui.snapMode.value='quantise';
+      if(ui.useGrid) ui.useGrid.checked=true;
+      if(ui.flowCurve) ui.flowCurve.value='bounce';
+      if(ui.wander){ ui.wander.value='0.55'; if(ui.wanderLbl) ui.wanderLbl.textContent='55%'; }
+      if(ui.pulse) ui.pulse.checked=true;
+      if(ui.trail) ui.trail.checked=true;
+      if(ui.shadeStyle) ui.shadeStyle.value='segments';
+      if(ui.shadeThickness) ui.shadeThickness.value='3.2';
+      if(ui.shadeOpacity) ui.shadeOpacity.value='0.45';
+      if(ui.shadeJitter) ui.shadeJitter.value='1.1';
+      if(ui.snapAmt){
+        ui.snapAmt.value='0.8';
+        if(ui.snapAmtLbl) ui.snapAmtLbl.textContent='0.80';
+      }
+    }
+  },
+  {
+    name:'Architect calm',
+    setup(){
+      updateColorInputs({
+        dots:'#e8f3ff',
+        shade:'#b3d5ff',
+        grid:'#94bde6',
+        bgInner:'#11263b',
+        bgOuter:'#0a1828',
+        guide:'#a3e6ff'
+      });
+      if(ui.chalk) ui.chalk.checked=false;
+      if(ui.drawOn) ui.drawOn.checked=false;
+      if(ui.traceOutline) ui.traceOutline.checked=true;
+      if(ui.shadeFill) ui.shadeFill.checked=false;
+      if(ui.snapMode) ui.snapMode.value='centreline';
+      if(ui.useGrid) ui.useGrid.checked=true;
+      if(ui.flowCurve) ui.flowCurve.value='cosine';
+      if(ui.wander){ ui.wander.value='0.12'; if(ui.wanderLbl) ui.wanderLbl.textContent='12%'; }
+      if(ui.pulse) ui.pulse.checked=false;
+      if(ui.trail) ui.trail.checked=false;
+      if(ui.shadeStyle) ui.shadeStyle.value='ribbons';
+      if(ui.shadeThickness) ui.shadeThickness.value='1.8';
+      if(ui.shadeOpacity) ui.shadeOpacity.value='0.18';
+      if(ui.shadeJitter) ui.shadeJitter.value='0.4';
+      if(ui.snapAmt){
+        ui.snapAmt.value='0.4';
+        if(ui.snapAmtLbl) ui.snapAmtLbl.textContent='0.40';
+      }
+    }
+  }
 ];
 
 let shapes=[]; let shapeNames=presets.map(p=>p.name); let shapeGroups=[];
-let mode=0, paused=false, speedMul=parseFloat(speed.value);
+let mode=0, paused=false, speedMul=parseFloat(speed.value), nowMs=0, previousTrailState=false;
 let dots=[];
+let last=0, lastDt=16;
+
+function ensureShadeCanvas(){
+  if(W<=0 || H<=0) return;
+  const needsNew=!shadeCache.canvas || shadeCache.width!==W || shadeCache.height!==H;
+  if(needsNew){
+    const canvas=(typeof OffscreenCanvas!=='undefined')? new OffscreenCanvas(W,H):document.createElement('canvas');
+    canvas.width=W; canvas.height=H;
+    shadeCache.canvas=canvas;
+    shadeCache.ctx=canvas.getContext('2d');
+    shadeCache.width=W;
+    shadeCache.height=H;
+    shadeCache.cover=-1;
+  }
+}
+
+function randomizeChalkDot(idx){
+  const total=chalkState.count;
+  if(total<=0 || !chalkState.jitter || !chalkState.radius) return;
+  const passes=chalkState.passes;
+  const baseJ=idx*passes*2;
+  const baseR=idx*passes;
+  for(let p=0;p<passes;p++){
+    chalkState.jitter[baseJ+p*2]=(Math.random()-0.5);
+    chalkState.jitter[baseJ+p*2+1]=(Math.random()-0.5);
+    chalkState.radius[baseR+p]=0.9 + Math.random()*0.4;
+  }
+}
+
+function syncChalkState(force=false){
+  const total=dots.length;
+  if(!force && chalkState.count===total && chalkState.jitter && chalkState.radius) return;
+  chalkState.count=total;
+  if(total<=0){
+    chalkState.jitter=null;
+    chalkState.radius=null;
+    chalkState.updateCursor=0;
+    return;
+  }
+  const passes=chalkState.passes;
+  chalkState.jitter=new Float32Array(total*passes*2);
+  chalkState.radius=new Float32Array(total*passes);
+  chalkState.updateCursor=0;
+  for(let i=0;i<total;i++) randomizeChalkDot(i);
+}
+
+function updateChalkState(dt){
+  if(!chalkState.jitter || chalkState.count<=0) return;
+  const total=chalkState.count;
+  const speed=Math.max(0.4, Math.min(3, dt/16));
+  const updates=Math.max(1, Math.floor(total*0.01*speed));
+  let idx=chalkState.updateCursor||0;
+  for(let n=0;n<updates;n++){
+    randomizeChalkDot(idx);
+    idx++;
+    if(idx>=total) idx=0;
+  }
+  chalkState.updateCursor=idx;
+}
 
 // Transition controller
 let trans={active:false, t:0, t1:600, t2:1800, t3:3200};
@@ -735,7 +1005,7 @@ updateDurations();
 // Grid state
 let grid={cols:[], rows:4, anchorBase:[], anchorLookup:null, anchorSegments:[], anchorTotalLen:0, anchorVersion:0, colsVersion:0};
 const effects={
-  trace:{active:false,progress:1,seed:0},
+  trace:{active:false,progress:1,seed:0,startAtMs:0,pending:false},
   shade:{active:false,progress:1,seed:0}
 };
 const currentOutline={
@@ -1002,7 +1272,22 @@ function regenerateShapes(){
   shapeGroups = shapes.map(S=> S.map(pt=>pt.g||0));
   shapes = shapes.map(S=> S.map(pt=>({x:pt.x,y:pt.y})) );
 }
-function initDots(){ dots = ensureLength(shapes[0]||[], N).map(p=>({ x: Math.random()*W, y: Math.random()*H, tx: p.x, ty: p.y, px: 0, py: 0, t: 1, msStart:0 })); }
+function initDots(){
+  dots = ensureLength(shapes[0]||[], N).map(p=>{
+    const dot=enrichDot({
+      x: Math.random()*W,
+      y: Math.random()*H,
+      tx: p.x,
+      ty: p.y,
+      px: 0,
+      py: 0,
+      t: 1,
+      msStart:0
+    });
+    return dot;
+  });
+  syncChalkState(true);
+}
 
 function rebuildTargets(){
   N = parseInt(ui.count.value,10); ui.countLbl.textContent=N; updateDurations(); regenerateShapes();
@@ -1010,9 +1295,36 @@ function rebuildTargets(){
   const snapped = applyGridSnap(rawTargets);
   const S0 = sanitizePoints(snapped);
   updateCurrentOutline(S0, S0.map(pt=>pt.g||0));
-  if(dots.length!==N){ const tmp=ensureLength(dots,N); dots = tmp.map(d=>({x:finite(d.x)?d.x:Math.random()*W,y:finite(d.y)?d.y:Math.random()*H,tx:0,ty:0,px:0,py:0,t:1,msStart:0})); }
-  for(let i=0;i<N;i++){ dots[i].px=dots[i].x; dots[i].py=dots[i].y; dots[i].tx=S0[i].x; dots[i].ty=S0[i].y; dots[i].t=0; dots[i].msStart=trans.t1 + staggerDelayFor(i, S0[i]); }
+  if(dots.length!==N){
+    const tmp=ensureLength(dots,N);
+    dots = tmp.map(d=>{
+      const src=d||{};
+      return enrichDot({
+        x:finite(src.x)?src.x:Math.random()*W,
+        y:finite(src.y)?src.y:Math.random()*H,
+        tx:0,
+        ty:0,
+        px:0,
+        py:0,
+        t:1,
+        msStart:0,
+        wanderSeed:src.wanderSeed,
+        wanderPhase:src.wanderPhase,
+        pulseOffset:src.pulseOffset
+      });
+    });
+  }
+  for(let i=0;i<N;i++){
+    const d=enrichDot(dots[i]);
+    d.px=d.x;
+    d.py=d.y;
+    d.tx=S0[i].x;
+    d.ty=S0[i].y;
+    d.t=0;
+    d.msStart=trans.t1 + staggerDelayFor(i, S0[i]);
+  }
   renderList();
+  syncChalkState(true);
 }
 
 function safeRebuild(){
@@ -1041,11 +1353,40 @@ function gotoShape(i){
   const raw = ensureLength(shapes[mode]||[], N).map((p,idx)=>({x:p.x,y:p.y,g:shapeGroups[mode]?shapeGroups[mode][idx]:0}));
   const S = sanitizePoints(applyGridSnap(raw));
   updateCurrentOutline(S, S.map(pt=>pt.g||0));
-  for(let k=0;k<N;k++){ dots[k].px=dots[k].x; dots[k].py=dots[k].y; dots[k].tx=S[k].x; dots[k].ty=S[k].y; dots[k].t=0; dots[k].msStart=trans.t1 + staggerDelayFor(k, S[k]); }
+  for(let k=0;k<N;k++){
+    const d=enrichDot(dots[k]);
+    d.px=d.x;
+    d.py=d.y;
+    d.tx=S[k].x;
+    d.ty=S[k].y;
+    d.t=0;
+    d.msStart=trans.t1 + staggerDelayFor(k, S[k]);
+  }
   trans.active=true; trans.t=0; updateDurations();
 }
 
 function renderList(){ ui.list.innerHTML=''; shapeNames.forEach((n,idx)=>{ const b=document.createElement('span'); b.textContent=(idx+1)+'. '+n; b.className='badge'; b.onclick=()=>gotoShape(idx); ui.list.appendChild(b); }); }
+
+let lastSceneIndex=-1;
+function applyCreativeScene(index){
+  const scene=creativeScenes[index];
+  if(!scene) return;
+  scene.setup();
+  updateShadeThickness();
+  updateShadeOpacity();
+  updateShadeJitter();
+  applyPalette();
+  safeRebuild();
+  gotoShape(mode);
+  if(ui.sceneLabel) ui.sceneLabel.textContent=scene.name;
+  lastSceneIndex=index;
+}
+function inspireScene(){
+  if(!creativeScenes.length) return;
+  let idx=Math.floor(Math.random()*creativeScenes.length);
+  if(idx===lastSceneIndex && creativeScenes.length>1){ idx=(idx+1)%creativeScenes.length; }
+  applyCreativeScene(idx);
+}
 
 // Add custom SVG
 ui.add.onclick=()=>{
@@ -1064,6 +1405,14 @@ ui.lockGrid.onchange=()=>{ if(!ui.lockGrid.checked && ui.gridWarn){ ui.gridWarn.
 ui.traceOutline.onchange=()=>{ resetEffects(); draw(); };
 ui.shadeFill.onchange=()=>{ resetEffects(); draw(); };
 ui.traceMs.onchange=()=>{ resetEffects(); draw(); };
+if(ui.traceDelay){
+  ui.traceDelay.addEventListener('change', ()=>{
+    if(ui.traceOutline && ui.traceOutline.checked){
+      resetEffects();
+      draw();
+    }
+  });
+}
 ui.shadeMs.onchange=()=>{ resetEffects(); draw(); };
 ui.shadeStyle.onchange=()=>{ resetEffects(); draw(); };
 const updateShadeThickness=()=>{ if(ui.shadeThicknessLbl){ ui.shadeThicknessLbl.textContent=`${parseFloat(ui.shadeThickness.value||0).toFixed(1)}px`; } };
@@ -1081,6 +1430,19 @@ ui.shadeJitter.onchange=()=>{ updateShadeJitter(); resetEffects(); draw(); };
     ui[key].addEventListener('change', applyPalette);
   }
 });
+if(ui.shufflePalette){
+  ui.shufflePalette.addEventListener('click', ()=>{
+    const p=generatePalette();
+    updateColorInputs(p);
+    applyPalette();
+  });
+}
+if(ui.restorePalette){
+  ui.restorePalette.addEventListener('click', ()=>{
+    updateColorInputs(defaultPalette);
+    applyPalette();
+  });
+}
 updateShadeThickness();
 updateShadeOpacity();
 updateShadeJitter();
@@ -1096,6 +1458,21 @@ ui.durErase.onchange=updateDurations; ui.durMove.onchange=updateDurations; ui.du
 ui.fit.onchange=safeRebuild; ui.pad.onchange=safeRebuild;
 ui.useGrid.onchange=safeRebuild; ui.showGrid.onchange=()=>{}; ui.snapMode.onchange=safeRebuild; ui.gridRows.onchange=safeRebuild;
 ui.res.onchange=()=>{ const v=ui.res.value; if(v==='window'){ FIXED=null; } else { const [w,h]=v.split('x').map(Number); FIXED={w,h}; } resize(); safeRebuild(); };
+if(ui.flowCurve){
+  ui.flowCurve.onchange=()=>{
+    resetEffects();
+    gotoShape(mode);
+    draw();
+  };
+}
+if(ui.wander){
+  ui.wander.oninput=()=>{ const pct=Math.round(parseFloat(ui.wander.value||0)*100); if(ui.wanderLbl) ui.wanderLbl.textContent=`${pct}%`; draw(); };
+  ui.wander.onchange=()=>{ const pct=Math.round(parseFloat(ui.wander.value||0)*100); if(ui.wanderLbl) ui.wanderLbl.textContent=`${pct}%`; draw(); };
+}
+if(ui.pulse){ ui.pulse.onchange=draw; }
+if(ui.trail){ ui.trail.onchange=draw; }
+if(ui.chalk){ ui.chalk.onchange=()=>{ syncChalkState(true); draw(); }; }
+if(ui.sceneInspire){ ui.sceneInspire.addEventListener('click', inspireScene); }
 
 // recording
 let mediaRecorder=null, recChunks=[]; ui.rec.onclick=()=>{ try{ const fps=50; const stream=cv.captureStream(fps); mediaRecorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp9'}); recChunks=[]; mediaRecorder.ondataavailable=e=>{ if(e.data.size>0) recChunks.push(e.data); }; mediaRecorder.onstop=()=>{ const blob=new Blob(recChunks,{type:'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; const ts=new Date().toISOString().replace(/[:.]/g,'-'); a.download=`blueprint-morph-${W}x${H}-${fps}fps-${ts}.webm`; a.click(); URL.revokeObjectURL(url); }; mediaRecorder.start(); }catch(err){ alert('Recording not supported: '+err); } }; ui.stopRec.onclick=()=>{ if(mediaRecorder&&mediaRecorder.state!=='inactive'){ mediaRecorder.stop(); mediaRecorder=null; } };
@@ -1104,15 +1481,49 @@ let mediaRecorder=null, recChunks=[]; ui.rec.onclick=()=>{ try{ const fps=50; co
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault(); gotoShape(mode+1);} const n=+e.key; if(n>=1&&n<=9) gotoShape(n-1); });
 
 // animate
-let last=0,lastDt=16; function tick(ts){ requestAnimationFrame(tick); const dt=Math.min(32, ts-last||16); last=ts; lastDt=dt; if(!paused){ if(trans.active) trans.t += dt; const moveDur=Math.max(1, trans.t2-trans.t1); for(const d of dots){ const local = Math.max(0, Math.min(1, (trans.t - d.msStart)/moveDur )); const k=ease(local); d.x = d.px + (d.tx-d.px)*k; d.y = d.py + (d.ty-d.py)*k; } } draw(); }
+function tick(ts){
+  requestAnimationFrame(tick);
+  const rawDt=Math.min(32, ts-last||16);
+  const speedFactor=Math.max(0.1, Number.isFinite(speedMul)?speedMul:1);
+  const dt=rawDt*speedFactor;
+  last=ts;
+  lastDt=dt;
+  if(!paused){
+    nowMs+=dt;
+    if(trans.active) trans.t += dt;
+    const moveDur=Math.max(1, trans.t2-trans.t1);
+    const easeFn=currentEase();
+    const wanderStrength=parseFloat(ui.wander&&ui.wander.value||0);
+    const wanderEnabled=wanderStrength>0.0001;
+    const wanderAmp=wanderEnabled?6*wanderStrength*DPR:0;
+    const wanderSpeed=wanderEnabled?(0.0006 + wanderStrength*0.0025):0;
+    for(const d of dots){
+      const local = Math.max(0, Math.min(1, (trans.t - d.msStart)/moveDur ));
+      const eased=Math.max(0, Math.min(1, easeFn(local)));
+      d.x = d.px + (d.tx-d.px)*eased;
+      d.y = d.py + (d.ty-d.py)*eased;
+      if(wanderEnabled){
+        d.wanderPhase=(Number.isFinite(d.wanderPhase)?d.wanderPhase:Math.random()*Math.PI*2) + dt*wanderSpeed;
+        const seed=Number.isFinite(d.wanderSeed)?d.wanderSeed:0;
+        d.x += Math.cos(d.wanderPhase + seed)*wanderAmp;
+        d.y += Math.sin(d.wanderPhase*1.3 + seed)*wanderAmp;
+      }
+    }
+  }
+  draw();
+}
 
 function drawBg(){
-  ctx.clearRect(0,0,W,H);
+  const useTrail=ui.trail && ui.trail.checked;
+  if(!useTrail || !previousTrailState){ ctx.clearRect(0,0,W,H); }
   const g=ctx.createRadialGradient(W*0.6,H*-0.1,Math.min(W,H)*0.1,W*0.5,H*0.5,Math.hypot(W,H)*0.6);
   g.addColorStop(0,palette.bgInner);
   g.addColorStop(1,palette.bgOuter);
+  ctx.save();
+  ctx.globalAlpha=useTrail?0.25:1;
   ctx.fillStyle=g;
   ctx.fillRect(0,0,W,H);
+  ctx.restore();
   if(!window.__noise){
     const ncv=document.createElement('canvas');
     ncv.width=256; ncv.height=256;
@@ -1126,11 +1537,12 @@ function drawBg(){
     nctx.putImageData(img,0,0);
     window.__noise=ncv;
   }
-  ctx.globalAlpha=0.10;
+  ctx.globalAlpha=useTrail?0.06:0.10;
   for(let y=0;y<H;y+=256){
     for(let x=0;x<W;x+=256){ ctx.drawImage(window.__noise,x,y); }
   }
   ctx.globalAlpha=1;
+  previousTrailState=useTrail;
 }
 
 function drawGridOverlay(){
@@ -1185,15 +1597,98 @@ function jitter(id, seed, amp){
   }
   return base*amp;
 }
+function renderShadeLayer(targetCtx, params){
+  if(!targetCtx || !params) return;
+  const {cover, style, thicknessPx, jitterAmp, shadeColor, shadeGlow, seed, secondaryColor, gradStart, gradStop}=params;
+  targetCtx.save();
+  targetCtx.globalCompositeOperation='lighter';
+  targetCtx.shadowColor=shadeGlow;
+  targetCtx.lineCap='round';
+
+  for(const contour of currentOutline.contours){
+    if(!contour.fillPath || !contour.bounds) continue;
+    const b=contour.bounds;
+    const width=Math.max(1, b.width);
+    const height=Math.max(1, b.height);
+
+    targetCtx.save();
+    targetCtx.clip(contour.fillPath);
+
+    if(style==='segments'){
+      targetCtx.shadowBlur=thicknessPx*0.35;
+      const spacing=Math.max(6, thicknessPx*2);
+      const total=Math.ceil((width+height)/spacing);
+      const active=Math.max(1, Math.ceil(total*cover));
+      targetCtx.lineWidth=Math.max(1, thicknessPx*0.6);
+      targetCtx.strokeStyle=shadeColor;
+      for(let i=-total;i<active;i++){
+        const offset=i*spacing;
+        const x1=b.minX + offset;
+        const y1=b.minY;
+        const x2=x1 + height;
+        const y2=b.minY + height;
+        targetCtx.beginPath();
+        targetCtx.moveTo(x1 + jitter(i*7, seed, jitterAmp), y1 - height + jitter(i*7+1, seed, jitterAmp));
+        targetCtx.lineTo(x2 + jitter(i*7+2, seed, jitterAmp), y2 + jitter(i*7+3, seed, jitterAmp));
+        targetCtx.stroke();
+      }
+      targetCtx.lineWidth=Math.max(1, thicknessPx*0.45);
+      targetCtx.strokeStyle=secondaryColor;
+      for(let i=-active;i<active;i++){
+        const offset=i*spacing;
+        const x1=b.maxX - offset;
+        const y1=b.minY;
+        const x2=x1 - height;
+        const y2=b.minY + height;
+        targetCtx.beginPath();
+        targetCtx.moveTo(x1 + jitter(i*9, seed, jitterAmp), y1 + jitter(i*9+1, seed, jitterAmp));
+        targetCtx.lineTo(x2 + jitter(i*9+2, seed, jitterAmp), y2 + jitter(i*9+3, seed, jitterAmp));
+        targetCtx.stroke();
+      }
+    } else {
+      targetCtx.shadowBlur=thicknessPx*0.55;
+      const spacing=Math.max(4, thicknessPx*1.2);
+      const filledHeight=height*cover;
+      targetCtx.lineWidth=Math.max(1.1, thicknessPx);
+      targetCtx.strokeStyle=shadeColor;
+      const pad=Math.max(6, thicknessPx*2.2);
+      for(let row=0; row*spacing<=filledHeight; row++){
+        const y=b.minY + row*spacing;
+        const jitterX=jitter(row*5, seed, jitterAmp*1.2);
+        const jitterY=jitter(row*5+1, seed, jitterAmp*0.6);
+        targetCtx.beginPath();
+        targetCtx.moveTo(b.minX - pad + jitterX, y + jitterY);
+        targetCtx.lineTo(b.maxX + pad + jitterX, y + jitterY);
+        targetCtx.stroke();
+      }
+      const grad=targetCtx.createLinearGradient(b.minX, b.minY, b.minX, b.maxY);
+      const stop=Math.min(1, Math.max(0.01, cover));
+      grad.addColorStop(0, gradStart);
+      grad.addColorStop(stop, gradStop);
+      grad.addColorStop(Math.min(1, stop+0.0001), 'rgba(0,0,0,0)');
+      targetCtx.globalAlpha=0.6;
+      targetCtx.fillStyle=grad;
+      targetCtx.fillRect(b.minX-2, b.minY-2, width+4, height+4);
+      targetCtx.globalAlpha=1;
+    }
+
+    targetCtx.restore();
+  }
+
+  targetCtx.shadowColor='transparent';
+  targetCtx.shadowBlur=0;
+  targetCtx.restore();
+}
+
 function drawShadeOverlay(dotRadius){
-  if(!ui.shadeFill.checked || !currentOutline.fillPaths.length) return;
+  if(!ui.shadeFill.checked || !currentOutline.fillPaths.length){ shadeCache.cover=-1; return; }
   const duration=Math.max(100, parseFloat(ui.shadeMs.value)||1600);
   if(effects.shade.active){
     effects.shade.progress=Math.min(1, effects.shade.progress + (lastDt/duration));
     if(effects.shade.progress>=1){ effects.shade.active=false; }
   }
   const cover=Math.max(0, Math.min(1, effects.shade.progress));
-  if(cover<=0) return;
+  if(cover<=0){ shadeCache.cover=-1; return; }
   const style=(ui.shadeStyle&&ui.shadeStyle.value)||'ribbons';
   const thicknessSlider=parseFloat(ui.shadeThickness.value)||2.4;
   const thicknessPx=Math.max(0.4, thicknessSlider)*DPR;
@@ -1202,89 +1697,47 @@ function drawShadeOverlay(dotRadius){
   const opacity=Math.max(0.02, Math.min(1, parseFloat(ui.shadeOpacity.value)||0.25));
   const shadeColor=colorWithAlpha(palette.shade, opacity);
   const shadeGlow=colorWithAlpha(palette.shade, Math.min(1, opacity*0.7));
+  const secondaryColor=colorWithAlpha(palette.shade, opacity*0.5);
+  const gradStart=colorWithAlpha(palette.shade, opacity*0.12);
+  const gradStop=colorWithAlpha(palette.shade, opacity*0.65);
   const seed=effects.shade.seed||0;
+  const quantisedCover=Math.min(1, Math.max(0, Math.round(cover*180)/180));
 
-  ctx.save();
-  ctx.globalCompositeOperation='lighter';
-  ctx.shadowColor=shadeGlow;
-  ctx.lineCap='round';
+  ensureShadeCanvas();
+  const needsUpdate=!shadeCache.canvas || !shadeCache.ctx || shadeCache.cover!==quantisedCover || shadeCache.style!==style || shadeCache.thickness!==thicknessSlider || shadeCache.jitter!==jitterRatio || shadeCache.opacity!==opacity || shadeCache.seed!==seed || shadeCache.color!==palette.shade || shadeCache.width!==W || shadeCache.height!==H;
 
-  for(const contour of currentOutline.contours){
-    if(!contour.fillPath || !contour.bounds) continue;
-    const b=contour.bounds;
-    const width=Math.max(1, b.width);
-    const height=Math.max(1, b.height);
-
-    ctx.save();
-    ctx.clip(contour.fillPath);
-
-    if(style==='segments'){
-      ctx.shadowBlur=thicknessPx*0.35;
-      const spacing=Math.max(6, thicknessPx*2);
-      const total=Math.ceil((width+height)/spacing);
-      const active=Math.max(1, Math.ceil(total*cover));
-      ctx.lineWidth=Math.max(1, thicknessPx*0.6);
-      ctx.strokeStyle=shadeColor;
-      for(let i=-total;i<active;i++){
-        const offset=i*spacing;
-        const x1=b.minX + offset;
-        const y1=b.minY;
-        const x2=x1 + height;
-        const y2=b.minY + height;
-        ctx.beginPath();
-        ctx.moveTo(x1 + jitter(i*7, seed, jitterAmp), y1 - height + jitter(i*7+1, seed, jitterAmp));
-        ctx.lineTo(x2 + jitter(i*7+2, seed, jitterAmp), y2 + jitter(i*7+3, seed, jitterAmp));
-        ctx.stroke();
-      }
-      ctx.lineWidth=Math.max(1, thicknessPx*0.45);
-      ctx.strokeStyle=colorWithAlpha(palette.shade, opacity*0.5);
-      for(let i=-active;i<active;i++){
-        const offset=i*spacing;
-        const x1=b.maxX - offset;
-        const y1=b.minY;
-        const x2=x1 - height;
-        const y2=b.minY + height;
-        ctx.beginPath();
-        ctx.moveTo(x1 + jitter(i*9, seed, jitterAmp), y1 + jitter(i*9+1, seed, jitterAmp));
-        ctx.lineTo(x2 + jitter(i*9+2, seed, jitterAmp), y2 + jitter(i*9+3, seed, jitterAmp));
-        ctx.stroke();
-      }
-    } else {
-      ctx.shadowBlur=thicknessPx*0.55;
-      const spacing=Math.max(4, thicknessPx*1.2);
-      const filledHeight=height*cover;
-      ctx.lineWidth=Math.max(1.1, thicknessPx);
-      ctx.strokeStyle=shadeColor;
-      const pad=Math.max(6, thicknessPx*2.2);
-      for(let row=0; row*spacing<=filledHeight; row++){
-        const y=b.minY + row*spacing;
-        const jitterX=jitter(row*5, seed, jitterAmp*1.2);
-        const jitterY=jitter(row*5+1, seed, jitterAmp*0.6);
-        ctx.beginPath();
-        ctx.moveTo(b.minX - pad + jitterX, y + jitterY);
-        ctx.lineTo(b.maxX + pad + jitterX, y + jitterY);
-        ctx.stroke();
-      }
-      const grad=ctx.createLinearGradient(b.minX, b.minY, b.minX, b.maxY);
-      const stop=Math.min(1, Math.max(0.01, cover));
-      grad.addColorStop(0, colorWithAlpha(palette.shade, opacity*0.12));
-      grad.addColorStop(stop, colorWithAlpha(palette.shade, opacity*0.65));
-      grad.addColorStop(Math.min(1, stop+0.0001), 'rgba(0,0,0,0)');
-      ctx.globalAlpha=0.6;
-      ctx.fillStyle=grad;
-      ctx.fillRect(b.minX-2, b.minY-2, width+4, height+4);
-      ctx.globalAlpha=1;
-    }
-
-    ctx.restore();
+  if(needsUpdate && shadeCache.ctx){
+    shadeCache.ctx.clearRect(0,0,W,H);
+    renderShadeLayer(shadeCache.ctx,{cover:quantisedCover, style, thicknessPx, jitterAmp, shadeColor, shadeGlow, seed, secondaryColor, gradStart, gradStop});
+    shadeCache.cover=quantisedCover;
+    shadeCache.style=style;
+    shadeCache.thickness=thicknessSlider;
+    shadeCache.jitter=jitterRatio;
+    shadeCache.opacity=opacity;
+    shadeCache.seed=seed;
+    shadeCache.color=palette.shade;
+    shadeCache.width=W;
+    shadeCache.height=H;
   }
 
-  ctx.shadowColor='transparent';
-  ctx.shadowBlur=0;
-  ctx.restore();
+  if(shadeCache.canvas){
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    ctx.drawImage(shadeCache.canvas,0,0);
+    ctx.restore();
+  }
 }
 function drawTraceOverlay(r){
   if(!ui.traceOutline.checked || !currentOutline.contours.length) return;
+  const readyForOutline=!trans.active || trans.t>=trans.t2;
+  if(effects.trace.pending){
+    const gateTime=effects.trace.startAtMs||0;
+    if(readyForOutline && (nowMs||0)>=gateTime){
+      effects.trace.pending=false;
+      effects.trace.active=true;
+      effects.trace.progress=0;
+    }
+  }
   const duration=Math.max(100, parseFloat(ui.traceMs.value)||1400);
   if(effects.trace.active){
     effects.trace.progress=Math.min(1, effects.trace.progress + (lastDt/duration));
@@ -1344,6 +1797,10 @@ function drawTraceOverlay(r){
 }
 
 function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*DPR; drawShadeOverlay(r); const useChalk=ui.chalk.checked;
+  if(useChalk){
+    syncChalkState();
+    updateChalkState(lastDt||16);
+  }
   if(ui.showGuide.checked && currentOutline.path){
     ctx.save();
     const guideColor=useChalk?colorWithAlpha(palette.dots,0.22):colorWithAlpha(palette.guide,0.18);
@@ -1366,6 +1823,9 @@ function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*
   }
   const dotColor=palette.dots;
   const dotGlow=colorWithAlpha(palette.dots,0.85);
+  const pulseOn=ui.pulse && ui.pulse.checked;
+  const pulseSpeed=0.0024;
+  const time=nowMs||0;
   if(useChalk){
     ctx.fillStyle=dotColor;
     ctx.shadowColor=dotGlow;
@@ -1382,20 +1842,78 @@ function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*
   }
   let revealFrac=1; if(ui.drawOn.checked && trans.active){ revealFrac=Math.min(1, Math.max(0, (trans.t - trans.t2)/Math.max(1,(trans.t3-trans.t2)) )); }
   const cutoff=Math.floor(revealFrac*dots.length);
-  for(let i=0;i<dots.length;i++){ const d=dots[i]; const visible=(i<cutoff)||!ui.drawOn.checked; const baseAlpha=visible?0.38:0.06; const passes=useChalk?3:1; for(let k=0;k<passes;k++){ const jx=useChalk?(Math.random()-0.5)*r*0.8:0; const jy=useChalk?(Math.random()-0.5)*r*0.8:0; ctx.globalAlpha=baseAlpha; ctx.beginPath(); ctx.arc(d.x+jx,d.y+jy,useChalk?(r*0.9+Math.random()*0.4*r):r,0,Math.PI*2); ctx.fill(); } }
+  const chalkPasses=useChalk?(chalkState.passes||3):1;
+  const jitterArr=useChalk?chalkState.jitter:null;
+  const radiusArr=useChalk?chalkState.radius:null;
+  const jitterScale=useChalk?(r*0.8):0;
+  for(let i=0;i<dots.length;i++){
+    const d=dots[i];
+    const visible=(i<cutoff)||!ui.drawOn.checked;
+    const pulsePhase=pulseOn?((Math.sin(time*pulseSpeed + (d.pulseOffset||0))+1)/2):0;
+    const radiusFactor=pulseOn?(0.75 + pulsePhase*0.45):1;
+    const intensity=pulseOn?(0.7 + pulsePhase*0.5):1;
+    const baseAlpha=(visible?0.38:0.06)*intensity;
+    const passes=useChalk?chalkPasses:1;
+    for(let k=0;k<passes;k++){
+      let jx=0, jy=0, radius=r;
+      if(useChalk && jitterArr && radiusArr){
+        const idxBase=i*chalkPasses + k;
+        jx=jitterArr[idxBase*2]*jitterScale;
+        jy=jitterArr[idxBase*2+1]*jitterScale;
+        radius=r*(radiusArr[idxBase]||1);
+      }
+      ctx.globalAlpha=Math.min(1, baseAlpha);
+      ctx.beginPath();
+      ctx.arc(d.x+jx,d.y+jy,Math.max(0.1, radius*radiusFactor),0,Math.PI*2);
+      ctx.fill();
+    }
+  }
   ctx.shadowBlur=0; ctx.globalAlpha=1;
   drawTraceOverlay(r);
   const phase=!trans.active?'idle':(trans.t<trans.t1?'erase':(trans.t<trans.t2?'move':(trans.t<trans.t3?'reveal':'hold')));
   const gridState = (!ui.useGrid.checked || !(grid.cols&&grid.cols.length)) ? 'off' : (grid.cols.length===1 ? 'centreline' : ui.snapMode.value);
-  hud.textContent=`N ${N} • dots ${dots.length} • shape ${mode+1}/${shapes.length} • ${ui.fit.value} • grid ${gridState} • phase ${phase}`; if(trans.active && trans.t>=trans.t3){ trans.active=false; }
+  const flowLabel = ui.flowCurve ? ui.flowCurve.value : 'ease';
+  const driftPct = Math.round((parseFloat(ui.wander && ui.wander.value || 0))*100);
+  const pulseState = pulseOn?'pulse':'still';
+  hud.textContent=`N ${N} • dots ${dots.length} • shape ${mode+1}/${shapes.length} • ${ui.fit.value} • grid ${gridState} • flow ${flowLabel} • drift ${driftPct}% • ${pulseState} • phase ${phase}`;
+  if(trans.active && trans.t>=trans.t3){ trans.active=false; }
 }
 
 // init
-regenerateShapes(); initDots(); safeRebuild(); requestAnimationFrame(tick);
+regenerateShapes(); initDots(); safeRebuild(); gotoShape(mode); requestAnimationFrame(tick);
 
 /* ---------- Self tests ---------- */
 function selfTests(){
-  console.log('Running self tests…'); const prevN=N, prevMode=mode; const tests=[
+  console.log('Running self tests…');
+  const prevState={
+    mode,
+    countValue: ui.count?ui.count.value:'0',
+    useGrid: ui.useGrid?ui.useGrid.checked:false,
+    snapMode: ui.snapMode?ui.snapMode.value:'shape',
+    gridRowsValue: ui.gridRows?ui.gridRows.value:'4',
+    gridColsValue: ui.gridCols?ui.gridCols.value:'',
+    lockGrid: ui.lockGrid?ui.lockGrid.checked:false,
+    gridWarnText: ui.gridWarn?ui.gridWarn.textContent:'',
+    gridWarnDisplay: ui.gridWarn?ui.gridWarn.style.display:'none',
+    cols: Array.isArray(grid.cols)?grid.cols.slice():[],
+    rows: grid.rows,
+    colsVersion: grid.colsVersion,
+    anchorVersion: grid.anchorVersion,
+    anchors: grid.anchorBase.map(a=>({x:a.x,y:a.y,g:a.g||0}))
+  };
+  const setCountValue=value=>{
+    if(!ui.count) return parseInt(value,10)||0;
+    ui.count.value=String(value);
+    if(typeof ui.count.dispatchEvent==='function'){
+      ui.count.dispatchEvent(new Event('input',{bubbles:true}));
+    } else if(typeof ui.count.oninput==='function'){
+      ui.count.oninput();
+    } else if(ui.countLbl){
+      ui.countLbl.textContent=ui.count.value;
+    }
+    return parseInt(ui.count.value,10)||0;
+  };
+  const tests=[
     {name:'ensureLength grow', fn:()=>ensureLength([{x:0,y:0,g:0}],5).length===5},
     {name:'ensureLength shrink', fn:()=>ensureLength([{x:0,y:0,g:0},{x:1,y:1,g:0},{x:2,y:2,g:0}],2).length===2},
     {name:'rectOutline exact N', fn:()=>rectOutline(1573, 400, 240).length===1573},
@@ -1406,9 +1924,35 @@ function selfTests(){
     {name:'grid snap zero columns safe', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV(''); safeRebuild(); return dots.length===parseInt(ui.count.value,10); }},
     {name:'grid snap one column safe (centreline)', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV('80'); safeRebuild(); return dots.every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)); }},
     {name:'grid snap invalid CSV robust', fn:()=>{ ui.useGrid.checked=true; applyGridFromCSV('80,,notnum, 100'); safeRebuild(); return dots.length===parseInt(ui.count.value,10); }},
-    {name:'rebuildTargets keeps dots==N', fn:()=>{ const prev=ui.count.value; ui.count.value=777; safeRebuild(); const ok=dots.length===777; ui.count.value=prev; safeRebuild(); return ok; }}
+    {name:'rebuildTargets keeps dots==N', fn:()=>{ const prev=ui.count?ui.count.value:'0'; const target=setCountValue(777); safeRebuild(); const ok=dots.length===target; setCountValue(prev); safeRebuild(); return ok; }}
   ];
-  const results=tests.map(t=>({test:t.name, pass:!!t.fn()})); console.table(results); const allPass=results.every(r=>r.pass); ui.count.value=prevN; safeRebuild(); mode=prevMode; alert(allPass?'Self tests passed':'Some tests failed — see console');
+  let results=[]; let allPass=false;
+  try{
+    results=tests.map(t=>({test:t.name, pass:!!t.fn()}));
+    console.table(results);
+    allPass=results.every(r=>r.pass);
+  } finally {
+    if(ui.useGrid) ui.useGrid.checked=prevState.useGrid;
+    if(ui.snapMode) ui.snapMode.value=prevState.snapMode;
+    if(ui.gridRows) ui.gridRows.value=prevState.gridRowsValue;
+    if(ui.gridCols) ui.gridCols.value=prevState.gridColsValue;
+    if(ui.lockGrid) ui.lockGrid.checked=prevState.lockGrid;
+    grid.cols=prevState.cols.slice();
+    grid.rows=prevState.rows;
+    grid.colsVersion=prevState.colsVersion+1;
+    grid.anchorVersion=prevState.anchorVersion;
+    invalidateOverlay();
+    setAnchorBase(prevState.anchors);
+    mode=prevState.mode;
+    setCountValue(prevState.countValue);
+    safeRebuild();
+    if(ui.gridWarn){
+      ui.gridWarn.textContent=prevState.gridWarnText;
+      ui.gridWarn.style.display=prevState.gridWarnDisplay||'none';
+    }
+  }
+  alert(allPass?'Self tests passed':'Some tests failed — see console');
+  return results;
 }
 ui.selfTest.onclick=selfTests;
 </script>
