@@ -126,6 +126,7 @@
     </div>
     <div class="row">
       <span class="tiny">Trace ms</span><input id="traceMs" type="number" value="1400" min="100" max="60000" step="100" style="width:90px">
+      <span class="tiny">Trace delay</span><input id="traceDelay" type="number" value="0" min="0" max="60000" step="100" style="width:90px">
       <span class="tiny">Shade ms</span><input id="shadeMs" type="number" value="1600" min="100" max="60000" step="100" style="width:90px">
     </div>
 
@@ -275,7 +276,7 @@ const ui={
   gridRows, gridCols, gridFile, applyGrid, clearGrid,
   gridFromInput:document.getElementById('gridFromInput'),
   gridFromShape:document.getElementById('gridFromShape'),
-  lockGrid, traceOutline, shadeFill, traceMs, shadeMs,
+  lockGrid, traceOutline, shadeFill, traceMs, traceDelay:document.getElementById('traceDelay'), shadeMs,
   colorDots:document.getElementById('colorDots'),
   colorShade:document.getElementById('colorShade'),
   colorGrid:document.getElementById('colorGrid'),
@@ -846,12 +847,18 @@ function smoothAnchors(anchors){
 }
 function resetEffects(){
   if(ui.traceOutline && ui.traceOutline.checked && (currentOutline.totalLength||0)>0){
-    effects.trace.active=true;
+    const delayVal=ui.traceDelay?parseFloat(ui.traceDelay.value):0;
+    const delayMs=Math.max(0, Number.isFinite(delayVal)?delayVal:0);
+    effects.trace.active=false;
     effects.trace.progress=0;
     effects.trace.seed=Math.random()*1000;
+    effects.trace.pending=true;
+    effects.trace.startAtMs=(nowMs||0)+delayMs;
   } else {
     effects.trace.active=false;
     effects.trace.progress=1;
+    effects.trace.pending=false;
+    effects.trace.startAtMs=0;
   }
   if(ui.shadeFill && ui.shadeFill.checked && currentOutline.fillPaths.length){
     effects.shade.active=true;
@@ -1471,7 +1478,7 @@ updateDurations();
 // Grid state
 let grid={cols:[], rows:4, anchorBase:[], anchorLookup:null, anchorSegments:[], anchorTotalLen:0, anchorVersion:0, colsVersion:0};
 const effects={
-  trace:{active:false,progress:1,seed:0},
+  trace:{active:false,progress:1,seed:0,startAtMs:0,pending:false},
   shade:{active:false,progress:1,seed:0}
 };
 const currentOutline={
@@ -1883,6 +1890,14 @@ ui.lockGrid.onchange=()=>{ if(!ui.lockGrid.checked && ui.gridWarn){ ui.gridWarn.
 ui.traceOutline.onchange=()=>{ resetEffects(); draw(); };
 ui.shadeFill.onchange=()=>{ resetEffects(); draw(); };
 ui.traceMs.onchange=()=>{ resetEffects(); draw(); };
+if(ui.traceDelay){
+  ui.traceDelay.addEventListener('change', ()=>{
+    if(ui.traceOutline && ui.traceOutline.checked){
+      resetEffects();
+      draw();
+    }
+  });
+}
 ui.shadeMs.onchange=()=>{ resetEffects(); draw(); };
 ui.shadeStyle.onchange=()=>{ resetEffects(); draw(); };
 const updateShadeThickness=()=>{ if(ui.shadeThicknessLbl){ ui.shadeThicknessLbl.textContent=`${parseFloat(ui.shadeThickness.value||0).toFixed(1)}px`; } };
@@ -2253,6 +2268,15 @@ function drawShadeOverlay(dotRadius){
 }
 function drawTraceOverlay(r){
   if(!ui.traceOutline.checked || !currentOutline.contours.length) return;
+  const readyForOutline=!trans.active || trans.t>=trans.t2;
+  if(effects.trace.pending){
+    const gateTime=effects.trace.startAtMs||0;
+    if(readyForOutline && (nowMs||0)>=gateTime){
+      effects.trace.pending=false;
+      effects.trace.active=true;
+      effects.trace.progress=0;
+    }
+  }
   const duration=Math.max(100, parseFloat(ui.traceMs.value)||1400);
   if(effects.trace.active){
     effects.trace.progress=Math.min(1, effects.trace.progress + (lastDt/duration));
