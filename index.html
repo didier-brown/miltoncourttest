@@ -24,7 +24,7 @@
   button.secondary{background:#103126;color:#d8efe3;border:1px solid #1a5a47}
   input[type=file]{display:none}
   label.file{padding:9px 12px;border:1px dashed #2a7a61;border-radius:10px;color:#c7eee1;cursor:pointer}
-  .tiny{font-size:11px;color:#bde7da;white-space:nowrap}
+  .tiny{font-size:11px;color:#bde7da}
   .list{flex:1;overflow:auto;border:1px solid #1a5a47;border-radius:10px;padding:8px;background:#0c2a21;min-height:160px;max-height:260px}
   .badge{display:inline-block;padding:3px 7px;border-radius:8px;background:#0e372b;margin:3px 3px 0 0;border:1px solid #1a5a47;cursor:pointer}
   canvas{width:100%;height:100%;display:block;border:1px solid var(--line);border-radius:14px;background:#0f2f24}
@@ -112,23 +112,6 @@
     </div>
     <p class="tiny">You can paste <em>one</em> number (a single vertical line) or multiple numbers (cell columns). With one column, <b>centreline</b> snap is used automatically. With none, grid snap disables. Never breaks rendering.</p>
     <p class="tiny warn" id="gridWarn" style="display:none"></p>
-
-    <h2>SVG Paint Layer</h2>
-    <div class="row toggle">
-      <input type="checkbox" id="svgPaint">
-      <label for="svgPaint" class="tiny">Show original SVG colours</label>
-
-      <input type="checkbox" id="svgPaintAnimate" checked>
-      <label for="svgPaintAnimate" class="tiny">Animate paint reveal</label>
-    </div>
-    <div class="row">
-      <span class="tiny">Paint Opacity</span>
-      <input id="svgPaintAlpha" type="range" min="0" max="1" step="0.05" value="0">
-      <span class="tiny" id="svgPaintAlphaLbl">0.00</span>
-
-      <span class="tiny">Reveal ms</span>
-      <input id="svgPaintRevealMs" type="number" min="0" value="1200" style="width:90px">
-    </div>
 
     <h2>Milton Court Tweaks</h2>
     <div class="row toggle">
@@ -249,43 +232,16 @@ let W=0,H=0,DPR=1, FIXED=null;
 const gridOverlayCache={path:null, width:0, height:0, mode:'none', anchorVersion:-1, colsVersion:-1, rows:-1};
 const shadeCache={canvas:null, ctx:null, width:0, height:0, cover:-1, style:'', thickness:0, jitter:0, opacity:0, seed:0, color:''};
 const chalkState={count:0, passes:3, jitter:null, radius:null, updateCursor:0};
-
-// ======== SVG Paint Layer (colour-preserving) ========
-let paint={
-  img:null,
-  url:null,
-  alpha:0,
-  targetAlpha:0,
-  t:0,
-  revealMs:1200,
-  hasContent:false,
-  pendingInit:false,
-  raw:null
-};
-
-let ui=null;
-
-function disposePaint(){
-  if(paint.url){ URL.revokeObjectURL(paint.url); }
-  paint.img=null;
-  paint.url=null;
-  paint.hasContent=false;
-  paint.alpha=0;
-  paint.targetAlpha=0;
-  paint.t=0;
-}
-
 function resize(){
   DPR=window.devicePixelRatio||1;
   if(FIXED){ W=FIXED.w; H=FIXED.h; }
   else { const b=cv.getBoundingClientRect(); W=Math.round(b.width*DPR); H=Math.round(b.height*DPR); }
   cv.width=W; cv.height=H;
   invalidateOverlay();
-  if(ui){ rebuildPaintIfPossible(); }
 }
 resize(); addEventListener('resize', ()=>{ if(!FIXED) { resize(); safeRebuild(); }});
 
-ui={
+const ui={
   count:dotCount,countLbl:dotCountLbl,speed,speedLbl,size,sizeLbl,
   svg:svgInput,add:addFromSVG,file:document.getElementById('file'),
   list:shapeList,cycle, pause, selfTest, chalk:document.getElementById('chalk'),
@@ -296,11 +252,6 @@ ui={
   gridFromInput:document.getElementById('gridFromInput'),
   gridFromShape:document.getElementById('gridFromShape'),
   lockGrid, traceOutline, shadeFill, traceMs, traceDelay:document.getElementById('traceDelay'), shadeMs,
-  svgPaint:document.getElementById('svgPaint'),
-  svgPaintAnimate:document.getElementById('svgPaintAnimate'),
-  svgPaintAlpha:document.getElementById('svgPaintAlpha'),
-  svgPaintAlphaLbl:document.getElementById('svgPaintAlphaLbl'),
-  svgPaintRevealMs:document.getElementById('svgPaintRevealMs'),
   colorDots:document.getElementById('colorDots'),
   colorShade:document.getElementById('colorShade'),
   colorGrid:document.getElementById('colorGrid'),
@@ -841,112 +792,7 @@ function extractGeometry(svgText){
 }
 function dStringsToSVG(dArr){ const ns='http://www.w3.org/2000/svg'; const hub=document.createElementNS(ns,'svg'); for(const d of dArr){ const p=document.createElementNS(ns,'path'); p.setAttribute('d',d); p.setAttribute('fill','none'); p.setAttribute('stroke','none'); hub.appendChild(p);} return hub; }
 
-function initPaintStateForNewSVG(){
-  const target=parseFloat(ui.svgPaintAlpha ? ui.svgPaintAlpha.value : 0) || 0;
-  const reveal=Math.max(0, parseInt(ui.svgPaintRevealMs ? ui.svgPaintRevealMs.value : paint.revealMs, 10) || 0);
-  paint.targetAlpha=target;
-  paint.revealMs=reveal;
-  paint.t=0;
-  if(ui.svgPaintAnimate && ui.svgPaintAnimate.checked){
-    paint.alpha=0;
-  } else {
-    paint.alpha=target;
-  }
-}
-
-function makePaintFromHub(hub, bbox, sourceRaw){
-  if(!hub || !bbox) return;
-  const pad=parseFloat(ui.pad.value)||0;
-  const innerW=Math.max(0,W-2*pad), innerH=Math.max(0,H-2*pad);
-  const sx=innerW/Math.max(1e-6,bbox.width), sy=innerH/Math.max(1e-6,bbox.height);
-  let sX=sx, sY=sy;
-  if(ui.fit.value==='contain'){ const s=Math.min(sx,sy); sX=s; sY=s; }
-  else if(ui.fit.value==='cover'){ const s=Math.max(sx,sy); sX=s; sY=s; }
-  const ox=(W-bbox.width*sX)/2 - bbox.x*sX;
-  const oy=(H-bbox.height*sY)/2 - bbox.y*sY;
-
-  const svg=hub.cloneNode(true);
-  svg.setAttribute('width', W);
-  svg.setAttribute('height', H);
-  if(!svg.getAttribute('viewBox')){
-    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  }
-  if(!svg.getAttribute('xmlns')){
-    svg.setAttribute('xmlns','http://www.w3.org/2000/svg');
-  }
-  const ns='http://www.w3.org/2000/svg';
-  const g=document.createElementNS(ns,'g');
-  while(svg.firstChild){ g.appendChild(svg.firstChild); }
-  g.setAttribute('transform', `matrix(${sX},0,0,${sY},${ox},${oy})`);
-  svg.appendChild(g);
-
-  const xml=new XMLSerializer().serializeToString(svg);
-  const blob=new Blob([xml], {type:'image/svg+xml'});
-  const url=URL.createObjectURL(blob);
-
-  const shouldInit=!!paint.pendingInit;
-  const prevState=shouldInit?null:{
-    alpha:paint.alpha,
-    targetAlpha:paint.targetAlpha,
-    t:paint.t,
-    revealMs:paint.revealMs
-  };
-
-  disposePaint();
-  paint.url=url;
-  paint.img=new Image();
-  paint.img.decoding='async';
-  paint.img.onload=()=>{ paint.hasContent=true; draw(); };
-  paint.img.onerror=()=>{ disposePaint(); paint.pendingInit=false; draw(); };
-  paint.img.src=url;
-  paint.hasContent=false;
-  if(sourceRaw!==undefined){ paint.raw=String(sourceRaw).trim(); }
-  if(shouldInit){
-    initPaintStateForNewSVG();
-    paint.pendingInit=false;
-  } else if(prevState){
-    paint.alpha=prevState.alpha;
-    paint.targetAlpha=prevState.targetAlpha;
-    paint.t=prevState.t;
-    paint.revealMs=prevState.revealMs;
-  }
-}
-
-function rebuildPaintIfPossible(rawOverride){
-  const raw=rawOverride!==undefined && rawOverride!==null ? String(rawOverride).trim() : (paint.raw || (ui.svg && ui.svg.value ? ui.svg.value.trim() : ''));
-  if(!raw) return false;
-  let hub;
-  if(/[<]svg/i.test(raw)){
-    hub=extractGeometry(raw);
-  } else {
-    const ns='http://www.w3.org/2000/svg';
-    hub=document.createElementNS(ns,'svg');
-    const dArr=String(raw||'').split('|').map(s=>s.trim()).filter(Boolean);
-    for(const d of dArr){
-      const p=document.createElementNS(ns,'path');
-      p.setAttribute('d',d);
-      hub.appendChild(p);
-    }
-  }
-  if(!hub) return false;
-  document.body.appendChild(hub);
-  let bbox;
-  try{ bbox=hub.getBBox(); }
-  catch{ bbox={x:0,y:0,width:W,height:H}; }
-  try{
-    makePaintFromHub(hub, bbox, raw);
-    return true;
-  } catch(err){
-    console.warn('Paint rebuild failed', err);
-    disposePaint();
-    paint.pendingInit=false;
-    return false;
-  } finally {
-    document.body.removeChild(hub);
-  }
-}
-
-function sampleSVG(input,total,capturePaint=false){
+function sampleSVG(input,total){
   let hub; if(/[<]svg/i.test(String(input))){ hub=extractGeometry(input);} else { const dArr=String(input||'').split('|').map(s=>s.trim()).filter(Boolean); if(!dArr.length) return ensureLength([],total); hub=dStringsToSVG(dArr);} if(!hub||!hub.childNodes.length) return ensureLength([],total);
   document.body.appendChild(hub);
   const nodes=[...hub.querySelectorAll('path,circle,ellipse,rect,line,polyline,polygon')];
@@ -954,10 +800,6 @@ function sampleSVG(input,total,capturePaint=false){
   const totalLen=lens.reduce((a,b)=>a+b,0); if(totalLen<=0){ document.body.removeChild(hub); return ensureLength([],total); }
   let bbox; try{ bbox=hub.getBBox(); }catch{ bbox={x:0,y:0,width:W,height:H}; }
   const pts=[]; let gid=0; for(let i=0;i<nodes.length;i++){ const n=nodes[i]; const len=lens[i]; if(len<=0) {gid++; continue;} const share=Math.max(1,Math.round(total*(len/totalLen))); for(let j=0;j<share;j++){ const L=(share===1)? len*0.5 : j/(share-1)*len; try{ const p=n.getPointAtLength(L); if(Number.isFinite(p.x)&&Number.isFinite(p.y)) pts.push({x:p.x,y:p.y,g:gid}); }catch{} } gid++; }
-  if(capturePaint){
-    try{ makePaintFromHub(hub, bbox, input); }
-    catch(err){ console.warn('Paint capture failed', err); disposePaint(); paint.pendingInit=false; }
-  }
   document.body.removeChild(hub);
   const fitted=fitPoints(pts,bbox,W,H, parseFloat(ui.pad.value)||0, total, ui.fit.value);
   return sanitizePoints(fitted);
@@ -1162,7 +1004,6 @@ updateDurations();
 
 // Grid state
 let grid={cols:[], rows:4, anchorBase:[], anchorLookup:null, anchorSegments:[], anchorTotalLen:0, anchorVersion:0, colsVersion:0};
-
 const effects={
   trace:{active:false,progress:1,seed:0,startAtMs:0,pending:false},
   shade:{active:false,progress:1,seed:0}
@@ -1182,61 +1023,7 @@ function invalidateOverlay(){ gridOverlayCache.path=null; }
 function isGridLocked(){ return !!(ui.lockGrid && ui.lockGrid.checked && grid.anchorBase.length); }
 function showLockWarning(){ if(ui.gridWarn){ ui.gridWarn.textContent='Grid locked to Milton Court. Disable lock to edit grid.'; ui.gridWarn.style.display='block'; } }
 ui.snapAmt.oninput=()=>ui.snapAmtLbl.textContent=parseFloat(ui.snapAmt.value).toFixed(2);
-if(ui.svgPaintAlpha){
-  ui.svgPaintAlpha.oninput=()=>{
-    const val=parseFloat(ui.svgPaintAlpha.value)||0;
-    if(ui.svgPaintAlphaLbl){ ui.svgPaintAlphaLbl.textContent=val.toFixed(2); }
-    paint.targetAlpha=val;
-    if(!(ui.svgPaintAnimate && ui.svgPaintAnimate.checked)){
-      paint.alpha=val;
-      draw();
-    }
-  };
-  ui.svgPaintAlpha.oninput();
-}
-if(ui.svgPaintRevealMs){
-  ui.svgPaintRevealMs.onchange=()=>{
-    paint.revealMs=Math.max(0, parseInt(ui.svgPaintRevealMs.value,10)||0);
-  };
-  ui.svgPaintRevealMs.onchange();
-}
-if(ui.svgPaint){
-  ui.svgPaint.addEventListener('change', ()=>{
-    if(ui.svgPaint.checked){
-      if(ui.svgPaintAnimate && ui.svgPaintAnimate.checked){
-        paint.t=0;
-        paint.alpha=0;
-      } else {
-        paint.alpha=paint.targetAlpha;
-      }
-    }
-    draw();
-  });
-}
-if(ui.svgPaintAnimate){
-  ui.svgPaintAnimate.addEventListener('change', ()=>{
-    if(ui.svgPaintAnimate.checked){
-      paint.t=0;
-      if(ui.svgPaint && ui.svgPaint.checked){ paint.alpha=0; }
-    } else {
-      paint.alpha=paint.targetAlpha;
-      draw();
-    }
-  });
-}
-ui.gridFile.addEventListener('change', async e=>{
-  const f=e.target.files[0];
-  if(!f) return;
-  const txt=await f.text();
-  if(!txt) return;
-  paint.pendingInit=true;
-  const ok=setGridFromSVGAligned(txt, true);
-  if(!ok){
-    const rebuilt=rebuildPaintIfPossible(txt);
-    if(!rebuilt){ paint.pendingInit=false; }
-    autoColsFromSVG(txt);
-  }
-});
+ui.gridFile.addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; const txt=await f.text(); autoColsFromSVG(txt); });
 ui.applyGrid.onclick=()=>{ applyGridFromCSV(ui.gridCols.value); };
 ui.clearGrid.onclick=()=>{
   if(isGridLocked()){ showLockWarning(); return; }
@@ -1253,12 +1040,7 @@ ui.gridFromInput.onclick = ()=>{
   if(!raw){
     ui.gridWarn.textContent='Textbox is empty.'; ui.gridWarn.style.display='block'; return;
   }
-  paint.pendingInit=true;
-  const ok=setGridFromSVGAligned(raw);
-  if(!ok){
-    const built=rebuildPaintIfPossible(raw);
-    if(!built){ paint.pendingInit=false; }
-  }
+  setGridFromSVGAligned(raw);
 };
 ui.gridFromShape.onclick = ()=>{
   setGridFromCurrentShape();
@@ -1282,7 +1064,7 @@ function autoColsFromSVG(svg){ if(isGridLocked()){ showLockWarning(); return; } 
 }
 
 function setGridFromSVGAligned(svg, force=false){
-  if(!force && isGridLocked()){ showLockWarning(); return false; }
+  if(!force && isGridLocked()){ showLockWarning(); return; }
   try{
     const r = svgToAlignedGrid(svg);
     grid.cols = r.cols;
@@ -1291,7 +1073,7 @@ function setGridFromSVGAligned(svg, force=false){
     invalidateOverlay();
     ui.gridCols.value = grid.cols.join(', ');
     const anchorCount=Math.max(800, Math.min(6000, N||grid.anchorBase.length||3200));
-    const anchorSample=sampleSVG(svg, anchorCount, true);
+    const anchorSample=sampleSVG(svg, anchorCount);
     setAnchorBase(anchorSample);
     if(!grid.cols.length){
       ui.gridWarn.textContent='No vertical structure detected in SVG.';
@@ -1299,16 +1081,14 @@ function setGridFromSVGAligned(svg, force=false){
       if(!grid.anchorBase.length){ ui.useGrid.checked=false; }
       else if(ui.snapMode.value==='shape'){ ui.useGrid.checked=true; }
       safeRebuild();
-      return true;
+      return;
     }
     ui.gridWarn.style.display='none';
     ui.useGrid.checked = true;
     safeRebuild();
-    return true;
   }catch(e){
     console.warn(e);
     ui.gridWarn.textContent='Grid SVG parse failed.'; ui.gridWarn.style.display='block';
-    return false;
   }
 }
 
@@ -1613,15 +1393,10 @@ ui.add.onclick=()=>{
   const raw=ui.svg.value.trim();
   if(!raw) return;
   const name='Custom '+(shapeNames.length+1);
-  paint.pendingInit=true;
-  presets.push({name, fn:()=>sampleSVG(raw, N, true)});
+  presets.push({name, fn:()=>sampleSVG(raw, N)});
   shapeNames.push(name);
   // set grid to match this SVG (aligned to current fit/pad/canvas)
-  const ok=setGridFromSVGAligned(raw);
-  if(!ok){
-    const built=rebuildPaintIfPossible(raw);
-    if(!built){ paint.pendingInit=false; }
-  }
+  setGridFromSVGAligned(raw);
   ui.svg.value='';
   regenerateShapes(); renderList();
 };
@@ -1680,8 +1455,7 @@ ui.count.oninput=()=>ui.countLbl.textContent=ui.count.value; ui.count.onchange=s
 ui.speed.oninput=()=>{speedMul=parseFloat(ui.speed.value); ui.speedLbl.textContent=speedMul.toFixed(1)+'×';};
 ui.size.oninput=()=>ui.sizeLbl.textContent=ui.size.value;
 ui.durErase.onchange=updateDurations; ui.durMove.onchange=updateDurations; ui.durDraw.onchange=updateDurations;
-ui.fit.onchange=()=>{ rebuildPaintIfPossible(); safeRebuild(); };
-ui.pad.onchange=()=>{ rebuildPaintIfPossible(); safeRebuild(); };
+ui.fit.onchange=safeRebuild; ui.pad.onchange=safeRebuild;
 ui.useGrid.onchange=safeRebuild; ui.showGrid.onchange=()=>{}; ui.snapMode.onchange=safeRebuild; ui.gridRows.onchange=safeRebuild;
 ui.res.onchange=()=>{ const v=ui.res.value; if(v==='window'){ FIXED=null; } else { const [w,h]=v.split('x').map(Number); FIXED={w,h}; } resize(); safeRebuild(); };
 if(ui.flowCurve){
@@ -1734,15 +1508,6 @@ function tick(ts){
         d.x += Math.cos(d.wanderPhase + seed)*wanderAmp;
         d.y += Math.sin(d.wanderPhase*1.3 + seed)*wanderAmp;
       }
-    }
-  }
-  if(ui.svgPaint && ui.svgPaint.checked && paint.hasContent){
-    if(ui.svgPaintAnimate && ui.svgPaintAnimate.checked && paint.revealMs>0){
-      paint.t=Math.min(paint.t + dt, paint.revealMs);
-      const k=Math.min(1, paint.t/Math.max(1, paint.revealMs));
-      paint.alpha=paint.targetAlpha * k;
-    } else {
-      paint.alpha=paint.targetAlpha;
     }
   }
   draw();
@@ -2031,19 +1796,7 @@ function drawTraceOverlay(r){
   ctx.restore();
 }
 
-function draw(){
-  drawBg();
-  if(ui.svgPaint && ui.svgPaint.checked && paint.hasContent && paint.img){
-    ctx.save();
-    const alpha=Math.max(0, Math.min(1, paint.alpha));
-    ctx.globalAlpha=alpha;
-    ctx.drawImage(paint.img, 0, 0, W, H);
-    ctx.restore();
-  }
-  drawGridOverlay();
-  const r=parseFloat(ui.size.value)*DPR;
-  drawShadeOverlay(r);
-  const useChalk=ui.chalk.checked;
+function draw(){ drawBg(); drawGridOverlay(); const r=parseFloat(ui.size.value)*DPR; drawShadeOverlay(r); const useChalk=ui.chalk.checked;
   if(useChalk){
     syncChalkState();
     updateChalkState(lastDt||16);
